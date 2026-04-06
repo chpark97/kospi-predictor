@@ -100,8 +100,9 @@ def main():
 
     # train 명령
     train_parser = subparsers.add_parser("train", help="모델 학습 (Walk-forward)")
-    train_parser.add_argument("--model", default="attention", choices=["baseline", "attention"],
-                              help="모델 타입 (baseline: LSTM, attention: LSTM+Attention)")
+    train_parser.add_argument("--model", default="ensemble",
+                              choices=["baseline", "attention", "cnn", "ensemble"],
+                              help="모델 타입 (ensemble: 앙상블 추천)")
 
     # predict 명령
     subparsers.add_parser("predict", help="일일 예측 실행")

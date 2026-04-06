@@ -1,0 +1,107 @@
+"""앙상블 모델 - 다수의 모델 예측을 결합
+
+앙상블 전략:
+1. 아키텍처 다양성: LSTM, LSTM+Attention, 1D-CNN
+2. 시드 다양성: 동일 아키텍처를 다른 시드로 학습
+3. 가중 투표: validation 성능 기반 가중치 부여
+"""
+import logging
+
+import numpy as np
+import torch
+
+from models.lstm_baseline import LSTMBaseline
+from models.lstm_attention import LSTMAttention
+from models.cnn_model import CNN1D
+
+logger = logging.getLogger(__name__)
+
+MODEL_REGISTRY = {
+    "baseline": LSTMBaseline,
+    "attention": LSTMAttention,
+    "cnn": CNN1D,
+}
+
+# 앙상블 구성: (모델 타입, 시드)
+ENSEMBLE_MEMBERS = [
+    ("attention", 42),
+    ("attention", 123),
+    ("attention", 777),
+    ("baseline", 42),
+    ("baseline", 123),
+    ("cnn", 42),
+    ("cnn", 123),
+]
+
+
+def create_model(model_type, num_features, seq_length=20):
+    """모델 타입에 따라 인스턴스 생성"""
+    cls = MODEL_REGISTRY[model_type]
+    if model_type == "cnn":
+        return cls(num_features, seq_length=seq_length)
+    return cls(num_features)
+
+
+class EnsemblePredictor:
+    """학습된 앙상블 모델들의 예측을 결합"""
+
+    def __init__(self):
+        self.models = []       # (model, weight, model_type)
+        self.scaler = None
+
+    def add_model(self, model, weight=1.0, model_type="attention"):
+        model.eval()
+        self.models.append((model, weight, model_type))
+
+    def predict(self, X):
+        """가중 앙상블 예측
+
+        Returns:
+            pred_return: 가중 평균 예측 등락률
+            confidence: 모델 간 합의도 기반 확신도
+            details: 개별 모델 예측 상세
+        """
+        if not self.models:
+            raise ValueError("앙상블에 모델이 없습니다")
+
+        X_tensor = torch.FloatTensor(X) if not isinstance(X, torch.Tensor) else X
+
+        all_returns = []
+        all_confs = []
+        weights = []
+
+        with torch.no_grad():
+            for model, weight, model_type in self.models:
+                pred_ret, pred_conf = model(X_tensor)
+                all_returns.append(pred_ret.numpy())
+                all_confs.append(pred_conf.numpy())
+                weights.append(weight)
+
+        all_returns = np.array(all_returns)  # (n_models, batch)
+        all_confs = np.array(all_confs)
+        weights = np.array(weights)
+        weights = weights / weights.sum()  # 정규화
+
+        # 가중 평균 등락률
+        pred_return = np.average(all_returns, axis=0, weights=weights)
+
+        # 방향 합의도 기반 확신도
+        directions = (all_returns > 0).astype(float)  # (n_models, batch)
+        # 가중 투표: 상승 예측 비율
+        up_vote_ratio = np.average(directions, axis=0, weights=weights)
+        # 합의도: 0.5에서 멀수록 높은 확신
+        agreement = np.abs(up_vote_ratio - 0.5) * 2  # 0~1
+
+        # 최종 확신도: 개별 모델 확신도 가중평균 * 합의도
+        avg_conf = np.average(all_confs, axis=0, weights=weights)
+        confidence = avg_conf * (0.5 + 0.5 * agreement)
+
+        details = {
+            "individual_returns": all_returns,
+            "individual_confs": all_confs,
+            "up_vote_ratio": up_vote_ratio,
+            "agreement": agreement,
+            "weights": weights,
+        }
+
+        return pred_return, confidence, details

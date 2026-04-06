@@ -1,4 +1,4 @@
-"""일일 예측 실행 파이프라인 (리스크 필터 포함)"""
+"""일일 예측 실행 파이프라인 (앙상블 + 리스크 필터)"""
 import logging
 import sqlite3
 import sys
@@ -15,8 +15,7 @@ from config.settings import (
     CONFIDENCE_THRESHOLD, DB_PATH, LARGE_MOVE_THRESHOLD, LOG_PATH,
     VIX_THRESHOLD,
 )
-from models.lstm_attention import LSTMAttention
-from models.lstm_baseline import LSTMBaseline
+from models.ensemble import EnsemblePredictor, create_model
 from preprocessing.feature_engineer import FeatureEngineer
 
 logger = logging.getLogger(__name__)
@@ -24,27 +23,23 @@ logger = logging.getLogger(__name__)
 SAVE_DIR = Path(__file__).parent.parent / "saved_models"
 
 
-def load_model(model_path=None):
-    """저장된 모델 로드"""
+def load_ensemble(model_path=None):
+    """앙상블 모델 로드"""
     if model_path is None:
-        # 최신 final 모델 찾기
-        candidates = list(SAVE_DIR.glob("*_final.pt"))
-        if not candidates:
-            raise FileNotFoundError("학습된 모델이 없습니다. 먼저 train을 실행해주세요.")
-        model_path = max(candidates, key=lambda p: p.stat().st_mtime)
+        # ensemble_final.pt 우선, 없으면 단일 모델 fallback
+        ensemble_path = SAVE_DIR / "ensemble_final.pt"
+        if ensemble_path.exists():
+            model_path = ensemble_path
+        else:
+            candidates = list(SAVE_DIR.glob("*_final.pt"))
+            if not candidates:
+                raise FileNotFoundError("학습된 모델이 없습니다. 먼저 train을 실행해주세요.")
+            model_path = max(candidates, key=lambda p: p.stat().st_mtime)
 
     checkpoint = torch.load(model_path, weights_only=False)
 
     num_features = checkpoint["num_features"]
-    model_type = checkpoint.get("model_type", "attention")
-
-    if model_type == "attention":
-        model = LSTMAttention(num_features)
-    else:
-        model = LSTMBaseline(num_features)
-
-    model.load_state_dict(checkpoint["model_state"])
-    model.eval()
+    seq_length = checkpoint.get("seq_length", 20)
 
     # Scaler 복원
     scaler = StandardScaler()
@@ -53,28 +48,44 @@ def load_model(model_path=None):
     scaler.var_ = scaler.scale_ ** 2
     scaler.n_features_in_ = num_features
 
-    return model, scaler, checkpoint["feature_names"]
+    if "members" in checkpoint:
+        # 앙상블 모델
+        ensemble = EnsemblePredictor()
+        for member in checkpoint["members"]:
+            model = create_model(member["model_type"], num_features, seq_length)
+            model.load_state_dict(member["model_state"])
+            model.eval()
+            ensemble.add_model(model, member["weight"], member["model_type"])
+
+        logger.info(f"앙상블 로드: {len(checkpoint['members'])}개 모델")
+        return ensemble, scaler, checkpoint["feature_names"]
+    else:
+        # 단일 모델 fallback
+        from models.lstm_attention import LSTMAttention
+        from models.lstm_baseline import LSTMBaseline
+        model_type = checkpoint.get("model_type", "attention")
+        model = LSTMAttention(num_features) if model_type == "attention" else LSTMBaseline(num_features)
+        model.load_state_dict(checkpoint["model_state"])
+        model.eval()
+
+        ensemble = EnsemblePredictor()
+        ensemble.add_model(model, 1.0, model_type)
+        return ensemble, scaler, checkpoint["feature_names"]
 
 
 def get_latest_vix():
-    """최신 VIX 값 조회"""
     conn = sqlite3.connect(DB_PATH)
     try:
-        result = conn.execute(
-            "SELECT close, date FROM yahoo_vix ORDER BY date DESC LIMIT 1"
-        ).fetchone()
+        result = conn.execute("SELECT close, date FROM yahoo_vix ORDER BY date DESC LIMIT 1").fetchone()
         return (result[0], result[1]) if result else (None, None)
     finally:
         conn.close()
 
 
 def get_previous_kospi_return():
-    """전일 코스피 등락률 조회"""
     conn = sqlite3.connect(DB_PATH)
     try:
-        rows = conn.execute(
-            "SELECT close FROM kospi_index ORDER BY date DESC LIMIT 2"
-        ).fetchall()
+        rows = conn.execute("SELECT close FROM kospi_index ORDER BY date DESC LIMIT 2").fetchall()
         if len(rows) >= 2:
             return (rows[0][0] / rows[1][0] - 1) * 100
         return 0.0
@@ -86,7 +97,7 @@ def run_prediction():
     """일일 예측 실행"""
     today = datetime.now().strftime("%Y-%m-%d")
 
-    # 1. 데이터 수집 (최신 데이터 업데이트)
+    # 1. 데이터 업데이트
     logger.info("데이터 업데이트 중...")
     from collectors import YahooCollector, KRXCollector, FREDCollector
     YahooCollector().collect()
@@ -97,17 +108,20 @@ def run_prediction():
     fe = FeatureEngineer()
     df = fe.build_dataset()
 
-    # 3. 모델 로드
-    model, scaler, feature_names = load_model()
+    # 3. 앙상블 로드
+    ensemble, scaler, feature_names = load_ensemble()
 
-    # 4. 최근 시퀀스로 예측
+    # 4. 예측
     X, _, dates, _ = fe.prepare_sequences(df, scaler=scaler, fit_scaler=False)
-    latest_seq = torch.FloatTensor(X[-1:])
+    pred_return, confidence, details = ensemble.predict(X[-1:])
+    pred_return = pred_return[0]
+    confidence = confidence[0] * 100
 
-    with torch.no_grad():
-        pred_return, confidence = model(latest_seq)
-        pred_return = pred_return.item()
-        confidence = confidence.item() * 100  # %
+    # 개별 모델 방향
+    individual_dirs = details["individual_returns"][:, 0] > 0
+    up_count = individual_dirs.sum()
+    total_models = len(individual_dirs)
+    agreement_pct = details["agreement"][0] * 100
 
     # 5. 리스크 필터
     vix_value, vix_date = get_latest_vix()
@@ -116,7 +130,6 @@ def run_prediction():
     direction = "▲ 상승" if pred_return > 0 else "▼ 하락"
     sign = "+" if pred_return > 0 else ""
 
-    # 리스크 상태 판단
     risk_warnings = []
     signal_valid = True
 
@@ -126,7 +139,7 @@ def run_prediction():
 
     if abs(prev_return) >= LARGE_MOVE_THRESHOLD:
         risk_warnings.append(f"⚠ 전일 대폭 변동 ({prev_return:+.2f}%) - 신뢰도 하향")
-        confidence *= 0.8  # 20% 신뢰도 감소
+        confidence *= 0.8
 
     if confidence < CONFIDENCE_THRESHOLD:
         risk_warnings.append(f"⚠ 낮은 확신도 ({confidence:.1f}% < {CONFIDENCE_THRESHOLD}%) - 신호 미출력")
@@ -140,6 +153,7 @@ def run_prediction():
         f"  방향: {direction}" if signal_valid else f"  방향: ― (신호 무력화)",
         f"  예측 등락률: {sign}{pred_return:.2f}%",
         f"  신뢰도: {confidence:.1f}%",
+        f"  모델 합의: {int(up_count)}/{total_models} 상승 (합의도 {agreement_pct:.0f}%)",
         f"  VIX: {vix_value:.1f} ({vix_status})" if vix_value else "  VIX: N/A",
     ]
 
@@ -152,7 +166,6 @@ def run_prediction():
     result_text = "\n".join(output_lines)
     logger.info(result_text)
 
-    # 7. 로그 저장
     with open(LOG_PATH, "a", encoding="utf-8") as f:
         f.write(result_text + "\n\n")
 
@@ -165,6 +178,8 @@ def run_prediction():
         "confidence": confidence,
         "signal_valid": signal_valid,
         "vix": vix_value,
+        "agreement": agreement_pct,
+        "up_vote": f"{int(up_count)}/{total_models}",
         "risk_warnings": risk_warnings,
     }
 
