@@ -224,7 +224,8 @@ def walk_forward_ensemble():
 
     SAVE_DIR.mkdir(parents=True, exist_ok=True)
     all_results = []
-    selected_feature_mask = None  # 첫 split에서 결정, 이후 재사용
+    selected_feature_mask = None  # split별 재평가 후 교집합
+    _feature_keep_counts = None   # 피처별 선택 횟수 누적
 
     # Rolling window 또는 고정 split 선택
     if USE_ROLLING_WALK_FORWARD:
@@ -298,46 +299,65 @@ def walk_forward_ensemble():
             weight = max(val_da - 45, 1.0) * recency_factor
             ensemble.add_model(model, weight, model_type)
 
-        # ── 피처 선택 (첫 split 학습 후 수행) ──
-        if i == 0 and selected_feature_mask is None:
-            from pipeline.feature_selection import rank_features_by_importance
-            ranked = rank_features_by_importance(ensemble, X_val, fe.feature_names, n_samples=min(50, len(X_val)))
+        # ── 피처 선택 (매 split에서 평가, 교집합으로 최종 결정) ──
+        from pipeline.feature_selection import rank_features_by_importance
+
+        if selected_feature_mask is None:
+            # 아직 최종 마스크 미결정 → 이 split에서 평가
+            ranked = rank_features_by_importance(
+                ensemble, X_val, fe.feature_names,
+                n_samples=min(50, len(X_val))
+            )
             n_total = len(ranked)
             n_remove = max(int(n_total * 0.2), 1)
             n_keep = n_total - n_remove
             keep_names = set(name for name, _ in ranked[:n_keep])
-            selected_feature_mask = np.array([n in keep_names for n in fe.feature_names])
-            logger.info(f"피처 선택: {n_total} → {n_keep}개 (하위 {n_remove}개 제거)")
 
-            # 현재 split 데이터에 마스크 적용
+            if _feature_keep_counts is None:
+                _feature_keep_counts = {n: 0 for n in fe.feature_names}
+            for name in keep_names:
+                _feature_keep_counts[name] = _feature_keep_counts.get(name, 0) + 1
+
+            logger.info(f"  [Split {i+1}] 피처 평가: {n_total}개 중 {n_keep}개 유지")
+
+            # 두 번째 split 이후 마스크 확정 (최소 2회 평가)
+            if i >= 1 and _feature_keep_counts is not None:
+                # 모든 split에서 선택된 피처만 유지 (교집합)
+                min_count = max(1, i)  # 최소 i번 이상 선택된 피처
+                selected_feature_mask = np.array([
+                    _feature_keep_counts.get(n, 0) >= min_count
+                    for n in fe.feature_names
+                ])
+                n_selected = selected_feature_mask.sum()
+                logger.info(
+                    f"피처 선택 확정: {n_total} → {n_selected}개 "
+                    f"(split 1~{i+1} 교집합, 하위 {n_total - n_selected}개 제거)"
+                )
+
+        if selected_feature_mask is not None:
             X_tr = X_tr[:, :, selected_feature_mask]
             X_val = X_val[:, :, selected_feature_mask]
             X_test = X_test[:, :, selected_feature_mask]
             num_features = X_tr.shape[2]
 
-            # 앙상블 재학습 (선택된 피처로)
-            ensemble = EnsemblePredictor()
-            for j2, (model_type, seed) in enumerate(ENSEMBLE_MEMBERS):
-                torch.manual_seed(seed)
-                np.random.seed(seed)
-                model = create_model(model_type, num_features, seq_length)
-                train_ds = TensorDataset(torch.FloatTensor(X_tr), torch.FloatTensor(y_tr))
-                val_ds = TensorDataset(torch.FloatTensor(X_val), torch.FloatTensor(y_val))
-                hp_lr = best_params.get("learning_rate", LEARNING_RATE)
-                hp_bs = best_params.get("batch_size", BATCH_SIZE)
-                tl = DataLoader(train_ds, batch_size=hp_bs, shuffle=True, drop_last=True)
-                vl = DataLoader(val_ds, batch_size=hp_bs)
-                model, vl2, vd2 = train_single_model(model, tl, vl, lr=hp_lr)
-                recency_factor = 1.0 + 0.5 * i
-                weight = max(vd2 - 45, 1.0) * recency_factor
-                ensemble.add_model(model, weight, model_type)
-
-        elif selected_feature_mask is not None:
-            # 이후 split에도 동일 마스크 적용
-            X_tr = X_tr[:, :, selected_feature_mask]
-            X_val = X_val[:, :, selected_feature_mask]
-            X_test = X_test[:, :, selected_feature_mask]
-            num_features = X_tr.shape[2]
+            # 마스크 확정된 split에서 앙상블 재학습
+            if i >= 1 and _feature_keep_counts is not None:
+                _feature_keep_counts = None  # 확정 후 더 이상 누적 안 함
+                ensemble = EnsemblePredictor()
+                for j2, (model_type, seed) in enumerate(ENSEMBLE_MEMBERS):
+                    torch.manual_seed(seed)
+                    np.random.seed(seed)
+                    model = create_model(model_type, num_features, seq_length)
+                    train_ds = TensorDataset(torch.FloatTensor(X_tr), torch.FloatTensor(y_tr))
+                    val_ds = TensorDataset(torch.FloatTensor(X_val), torch.FloatTensor(y_val))
+                    hp_lr = best_params.get("learning_rate", LEARNING_RATE)
+                    hp_bs = best_params.get("batch_size", BATCH_SIZE)
+                    tl = DataLoader(train_ds, batch_size=hp_bs, shuffle=True, drop_last=True)
+                    vl = DataLoader(val_ds, batch_size=hp_bs)
+                    model, vl2, vd2 = train_single_model(model, tl, vl, lr=hp_lr)
+                    recency_factor = 1.0 + 0.5 * i
+                    weight = max(vd2 - 45, 1.0) * recency_factor
+                    ensemble.add_model(model, weight, model_type)
 
         # ── 앙상블 테스트 ──
         pred_returns, pred_confs, details = ensemble.predict(X_test)

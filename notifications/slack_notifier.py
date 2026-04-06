@@ -2,12 +2,29 @@
 import json
 import logging
 import os
+from pathlib import Path
 
 import requests
 
 logger = logging.getLogger(__name__)
 
-SLACK_WEBHOOK_URL = os.environ.get("SLACK_WEBHOOK_URL", "")
+
+def _load_webhook_url():
+    """환경변수 → .env 파일 순서로 웹훅 URL 로드"""
+    url = os.environ.get("SLACK_WEBHOOK_URL", "")
+    if url:
+        return url
+    # .env 파일 fallback
+    env_path = Path(__file__).parent.parent / ".env"
+    if env_path.exists():
+        for line in env_path.read_text().strip().splitlines():
+            line = line.strip()
+            if line.startswith("SLACK_WEBHOOK_URL="):
+                return line.split("=", 1)[1].strip()
+    return ""
+
+
+SLACK_WEBHOOK_URL = _load_webhook_url()
 
 
 def _post_to_slack(text):

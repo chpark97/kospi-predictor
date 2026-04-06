@@ -79,8 +79,18 @@ def update_weights(individual_predictions, actual_direction, member_names):
         else:
             da = 0.5
 
+        # 신규 모델 보호: 히스토리에 실제 기록(True가 1번이라도 있는)이
+        # 10일 미만이면 자동 비활성화 대상에서 제외
+        has_real_history = sum(
+            1 for h in history if name in h.get("correct", {})
+            and h["correct"][name] is not False
+            and h["correct"][name] != 0
+        )
+        is_new_model = has_real_history < 10
+
         # 자동 비활성화: 최근 10일 DA가 20% 이하면 가중치 0
-        if len(recent_10) >= 10:
+        # (단, 신규 모델은 10일 이상 기록 쌓일 때까지 보호)
+        if len(recent_10) >= 10 and not is_new_model:
             recent_correct = [h["correct"].get(name, False) for h in recent_10]
             recent_da = sum(recent_correct) / len(recent_correct)
             if recent_da <= 0.2:
@@ -88,8 +98,12 @@ def update_weights(individual_predictions, actual_direction, member_names):
                 logger.warning(f"  ⚠ {name} 자동 비활성화: 최근 10일 DA={recent_da*100:.0f}%")
                 continue
 
-        # 가중치: DA에 비례, 최소 0.1
-        weights[name] = max(da, 0.1)
+        if is_new_model:
+            # 신규 모델: 중립 가중치 1.0 (다른 모델과 동등하게 시작)
+            weights[name] = 1.0
+        else:
+            # 가중치: DA에 비례, 최소 0.1
+            weights[name] = max(da, 0.1)
 
     data["weights"] = weights
     save_weights(data)

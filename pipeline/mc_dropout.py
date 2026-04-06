@@ -42,7 +42,8 @@ def mc_dropout_predict(ensemble, X, n_samples=50):
             _enable_dropout(model)
 
             with torch.no_grad():
-                pred, _ = model(X_tensor)
+                outputs = model(X_tensor)
+                pred = outputs[0]  # 2-output 또는 3-output 모두 호환
                 sample_preds.append(pred.item() * weight)
 
             # 다시 eval 모드로

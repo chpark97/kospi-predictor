@@ -242,9 +242,14 @@ def run_prediction():
     )
     if cal_individual is not None:
         details["individual_returns"] = cal_individual
-
-    # Direction head 기반 방향 결정 (있으면 우선 사용)
-    if "individual_directions" in details:
+        # 캘리브레이션 적용 시 direction도 보정된 returns 기반으로 재계산
+        # (direction head 원본 대신 보정된 값 사용 → 편향 보정이 투표에 반영됨)
+        if cal_individual.ndim > 1:
+            individual_dirs = cal_individual[:, 0] > 0
+        else:
+            individual_dirs = cal_individual > 0
+    elif "individual_directions" in details:
+        # 캘리브레이션 미적용 시에만 direction head 사용
         indiv_dirs_raw = details["individual_directions"]
         if indiv_dirs_raw.ndim > 1:
             individual_dirs = indiv_dirs_raw[:, 0] > 0.5

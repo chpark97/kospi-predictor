@@ -9,10 +9,12 @@
         "baseline_123": 1,
         "cnn_42": 1,
         "cnn_123": 1,
+        "cnn_777": 1,
         "transformer_42": 0,
         "transformer_123": 0,
-        "multiscale_42": false,
-        "multiscale_123": false
+        "tft_42": false,
+        "tft_123": false,
+        "tft_777": false
       }
     },
     {
@@ -24,10 +26,12 @@
         "baseline_123": 0,
         "cnn_42": 1,
         "cnn_123": 1,
+        "cnn_777": 1,
         "transformer_42": 0,
         "transformer_123": 0,
-        "multiscale_42": false,
-        "multiscale_123": false
+        "tft_42": false,
+        "tft_123": false,
+        "tft_777": false
       }
     },
     {
@@ -39,10 +43,12 @@
         "baseline_123": 1,
         "cnn_42": 1,
         "cnn_123": 1,
+        "cnn_777": 1,
         "transformer_42": 0,
         "transformer_123": 1,
-        "multiscale_42": false,
-        "multiscale_123": false
+        "tft_42": false,
+        "tft_123": false,
+        "tft_777": false
       }
     },
     {
@@ -54,10 +60,12 @@
         "baseline_123": 0,
         "cnn_42": 1,
         "cnn_123": 1,
+        "cnn_777": 1,
         "transformer_42": 0,
         "transformer_123": 0,
-        "multiscale_42": false,
-        "multiscale_123": false
+        "tft_42": false,
+        "tft_123": false,
+        "tft_777": false
       }
     },
     {
@@ -69,10 +77,12 @@
         "baseline_123": 1,
         "cnn_42": 0,
         "cnn_123": 0,
+        "cnn_777": 0,
         "transformer_42": 1,
         "transformer_123": 1,
-        "multiscale_42": false,
-        "multiscale_123": false
+        "tft_42": false,
+        "tft_123": false,
+        "tft_777": false
       }
     },
     {
@@ -84,10 +94,12 @@
         "baseline_123": 1,
         "cnn_42": 0,
         "cnn_123": 0,
+        "cnn_777": 0,
         "transformer_42": 1,
         "transformer_123": 1,
-        "multiscale_42": false,
-        "multiscale_123": false
+        "tft_42": false,
+        "tft_123": false,
+        "tft_777": false
       }
     },
     {
@@ -99,10 +111,12 @@
         "baseline_123": 1,
         "cnn_42": 0,
         "cnn_123": 0,
+        "cnn_777": 0,
         "transformer_42": 0,
         "transformer_123": 1,
-        "multiscale_42": false,
-        "multiscale_123": false
+        "tft_42": false,
+        "tft_123": false,
+        "tft_777": false
       }
     },
     {
@@ -114,10 +128,12 @@
         "baseline_123": 0,
         "cnn_42": 1,
         "cnn_123": 1,
+        "cnn_777": 1,
         "transformer_42": 0,
         "transformer_123": 0,
-        "multiscale_42": false,
-        "multiscale_123": false
+        "tft_42": false,
+        "tft_123": false,
+        "tft_777": false
       }
     },
     {
@@ -129,10 +145,12 @@
         "baseline_123": 1,
         "cnn_42": 1,
         "cnn_123": 1,
+        "cnn_777": 1,
         "transformer_42": 0,
         "transformer_123": 0,
-        "multiscale_42": false,
-        "multiscale_123": false
+        "tft_42": false,
+        "tft_123": false,
+        "tft_777": false
       }
     },
     {
@@ -144,10 +162,12 @@
         "baseline_123": 0,
         "cnn_42": 0,
         "cnn_123": 0,
+        "cnn_777": 0,
         "transformer_42": 0,
         "transformer_123": 0,
-        "multiscale_42": false,
-        "multiscale_123": false
+        "tft_42": false,
+        "tft_123": false,
+        "tft_777": false
       }
     },
     {
@@ -159,10 +179,12 @@
         "baseline_123": 1,
         "cnn_42": 1,
         "cnn_123": 1,
+        "cnn_777": 1,
         "transformer_42": 1,
         "transformer_123": 1,
-        "multiscale_42": false,
-        "multiscale_123": false
+        "tft_42": false,
+        "tft_123": false,
+        "tft_777": false
       }
     },
     {
@@ -174,10 +196,12 @@
         "baseline_123": 1,
         "cnn_42": 1,
         "cnn_123": 1,
+        "cnn_777": 1,
         "transformer_42": 1,
         "transformer_123": 1,
-        "multiscale_42": false,
-        "multiscale_123": false
+        "tft_42": false,
+        "tft_123": false,
+        "tft_777": false
       }
     },
     {
@@ -189,10 +213,12 @@
         "baseline_123": 0,
         "cnn_42": 0,
         "cnn_123": 0,
+        "cnn_777": 0,
         "transformer_42": 0,
         "transformer_123": 0,
-        "multiscale_42": false,
-        "multiscale_123": false
+        "tft_42": false,
+        "tft_123": false,
+        "tft_777": false
       }
     },
     {
@@ -204,10 +230,12 @@
         "baseline_123": 0,
         "cnn_42": 0,
         "cnn_123": 0,
+        "cnn_777": 0,
         "transformer_42": 0,
         "transformer_123": 0,
-        "multiscale_42": false,
-        "multiscale_123": false
+        "tft_42": false,
+        "tft_123": false,
+        "tft_777": false
       }
     },
     {
@@ -219,10 +247,12 @@
         "baseline_123": 1,
         "cnn_42": 1,
         "cnn_123": 1,
+        "cnn_777": 1,
         "transformer_42": 1,
         "transformer_123": 1,
-        "multiscale_42": false,
-        "multiscale_123": false
+        "tft_42": false,
+        "tft_123": false,
+        "tft_777": false
       }
     },
     {
@@ -234,10 +264,12 @@
         "baseline_123": 1,
         "cnn_42": 1,
         "cnn_123": 1,
+        "cnn_777": 1,
         "transformer_42": 1,
         "transformer_123": 1,
-        "multiscale_42": false,
-        "multiscale_123": false
+        "tft_42": false,
+        "tft_123": false,
+        "tft_777": false
       }
     },
     {
@@ -249,10 +281,12 @@
         "baseline_123": 1,
         "cnn_42": 1,
         "cnn_123": 1,
+        "cnn_777": 1,
         "transformer_42": 1,
         "transformer_123": 1,
-        "multiscale_42": false,
-        "multiscale_123": false
+        "tft_42": false,
+        "tft_123": false,
+        "tft_777": false
       }
     },
     {
@@ -264,10 +298,12 @@
         "baseline_123": 0,
         "cnn_42": 0,
         "cnn_123": 0,
+        "cnn_777": 0,
         "transformer_42": 0,
         "transformer_123": 0,
-        "multiscale_42": false,
-        "multiscale_123": false
+        "tft_42": false,
+        "tft_123": false,
+        "tft_777": false
       }
     },
     {
@@ -279,10 +315,12 @@
         "baseline_123": 1,
         "cnn_42": 1,
         "cnn_123": 1,
+        "cnn_777": 1,
         "transformer_42": 1,
         "transformer_123": 1,
-        "multiscale_42": false,
-        "multiscale_123": false
+        "tft_42": false,
+        "tft_123": false,
+        "tft_777": false
       }
     },
     {
@@ -294,10 +332,12 @@
         "baseline_123": 1,
         "cnn_42": 0,
         "cnn_123": 0,
+        "cnn_777": 0,
         "transformer_42": 0,
         "transformer_123": 0,
-        "multiscale_42": false,
-        "multiscale_123": false
+        "tft_42": false,
+        "tft_123": false,
+        "tft_777": false
       }
     },
     {
@@ -309,10 +349,12 @@
         "baseline_123": 1,
         "cnn_42": 1,
         "cnn_123": 1,
+        "cnn_777": 1,
         "transformer_42": 0,
         "transformer_123": 1,
-        "multiscale_42": false,
-        "multiscale_123": false
+        "tft_42": false,
+        "tft_123": false,
+        "tft_777": false
       }
     },
     {
@@ -324,10 +366,12 @@
         "baseline_123": 1,
         "cnn_42": 1,
         "cnn_123": 1,
+        "cnn_777": 1,
         "transformer_42": 0,
         "transformer_123": 1,
-        "multiscale_42": false,
-        "multiscale_123": false
+        "tft_42": false,
+        "tft_123": false,
+        "tft_777": false
       }
     },
     {
@@ -339,10 +383,12 @@
         "baseline_123": 0,
         "cnn_42": 0,
         "cnn_123": 0,
+        "cnn_777": 0,
         "transformer_42": 0,
         "transformer_123": 0,
-        "multiscale_42": false,
-        "multiscale_123": false
+        "tft_42": false,
+        "tft_123": false,
+        "tft_777": false
       }
     },
     {
@@ -354,10 +400,12 @@
         "baseline_123": 0,
         "cnn_42": 0,
         "cnn_123": 0,
+        "cnn_777": 0,
         "transformer_42": 0,
         "transformer_123": 0,
-        "multiscale_42": false,
-        "multiscale_123": false
+        "tft_42": false,
+        "tft_123": false,
+        "tft_777": false
       }
     },
     {
@@ -369,10 +417,12 @@
         "baseline_123": 0,
         "cnn_42": 0,
         "cnn_123": 0,
+        "cnn_777": 0,
         "transformer_42": 1,
         "transformer_123": 0,
-        "multiscale_42": false,
-        "multiscale_123": false
+        "tft_42": false,
+        "tft_123": false,
+        "tft_777": false
       }
     },
     {
@@ -384,10 +434,12 @@
         "baseline_123": 0,
         "cnn_42": 0,
         "cnn_123": 0,
+        "cnn_777": 0,
         "transformer_42": 0,
         "transformer_123": 0,
-        "multiscale_42": false,
-        "multiscale_123": false
+        "tft_42": false,
+        "tft_123": false,
+        "tft_777": false
       }
     },
     {
@@ -399,10 +451,12 @@
         "baseline_123": 1,
         "cnn_42": 1,
         "cnn_123": 1,
+        "cnn_777": 1,
         "transformer_42": 0,
         "transformer_123": 1,
-        "multiscale_42": false,
-        "multiscale_123": false
+        "tft_42": false,
+        "tft_123": false,
+        "tft_777": false
       }
     },
     {
@@ -414,10 +468,12 @@
         "baseline_123": 0,
         "cnn_42": 0,
         "cnn_123": 0,
+        "cnn_777": 0,
         "transformer_42": 1,
         "transformer_123": 0,
-        "multiscale_42": false,
-        "multiscale_123": false
+        "tft_42": false,
+        "tft_123": false,
+        "tft_777": false
       }
     },
     {
@@ -429,10 +485,12 @@
         "baseline_123": 1,
         "cnn_42": 1,
         "cnn_123": 1,
+        "cnn_777": 1,
         "transformer_42": 1,
         "transformer_123": 1,
-        "multiscale_42": false,
-        "multiscale_123": false
+        "tft_42": false,
+        "tft_123": false,
+        "tft_777": false
       }
     },
     {
@@ -444,10 +502,12 @@
         "baseline_123": true,
         "cnn_42": true,
         "cnn_123": true,
+        "cnn_777": true,
         "transformer_42": false,
         "transformer_123": true,
-        "multiscale_42": false,
-        "multiscale_123": false
+        "tft_42": false,
+        "tft_123": false,
+        "tft_777": false
       }
     }
   ],
@@ -459,9 +519,11 @@
     "baseline_123": 0.6,
     "cnn_42": 0.5666666666666667,
     "cnn_123": 0.5666666666666667,
+    "cnn_777": 0.5,
     "transformer_42": 0.36666666666666664,
     "transformer_123": 0.5,
-    "multiscale_42": 0.1,
-    "multiscale_123": 0.1
+    "tft_42": 0.5,
+    "tft_123": 0.5,
+    "tft_777": 0.5
   }
 }
