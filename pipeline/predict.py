@@ -208,16 +208,31 @@ def compute_composite_confidence(details, regime, prediction_history=None):
 def run_prediction():
     today = datetime.now().strftime("%Y-%m-%d")
 
-    # 1. 데이터 업데이트
+    # 1. 데이터 업데이트 (수집 실패해도 기존 데이터로 예측 진행)
     logger.info("데이터 업데이트 중...")
     from collectors import YahooCollector, KRXCollector, FREDCollector, InvestorCollector, NewsCollector, KoreaSpecificCollector, ECOSCollector
-    YahooCollector().collect()
-    KRXCollector().collect()
-    FREDCollector().collect()
-    InvestorCollector().collect()
-    NewsCollector().collect(days_back=3)
-    KoreaSpecificCollector().collect()
-    ECOSCollector().collect()
+
+    collectors = [
+        ("Yahoo", YahooCollector),
+        ("KRX", KRXCollector),
+        ("FRED", FREDCollector),
+        ("Investor", InvestorCollector),
+        ("News", lambda: NewsCollector().collect(days_back=3)),
+        ("Korea", KoreaSpecificCollector),
+        ("ECOS", ECOSCollector),
+    ]
+    failed = []
+    for name, cls in collectors:
+        try:
+            if callable(cls) and not isinstance(cls, type):
+                cls()
+            else:
+                cls().collect()
+        except Exception as e:
+            logger.error(f"[{name}] 수집 실패: {e}")
+            failed.append(name)
+    if failed:
+        logger.warning(f"수집 실패: {failed} — 기존 데이터로 예측 진행")
 
     # 2. 피처 생성
     fe = FeatureEngineer()
