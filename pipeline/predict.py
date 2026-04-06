@@ -36,7 +36,7 @@ def load_ensemble(model_path=None):
         else:
             candidates = list(SAVE_DIR.glob("*_final.pt"))
             if not candidates:
-                raise FileNotFoundError("학습된 모델이 없습니다. 먼저 train을 실행해주세요.")
+                raise FileNotFoundError("학습된 모델이 없습니다.")
             model_path = max(candidates, key=lambda p: p.stat().st_mtime)
 
     checkpoint = torch.load(model_path, weights_only=False)
@@ -65,9 +65,9 @@ def load_ensemble(model_path=None):
         m = LSTMAttention(num_features) if mt == "attention" else LSTMBaseline(num_features)
         m.load_state_dict(checkpoint["model_state"])
         m.eval()
-        ensemble = EnsemblePredictor()
-        ensemble.add_model(m, 1.0, mt)
-        return ensemble, scaler, checkpoint["feature_names"]
+        ens = EnsemblePredictor()
+        ens.add_model(m, 1.0, mt)
+        return ens, scaler, checkpoint["feature_names"]
 
 
 # ── DB 조회 ──
@@ -101,7 +101,7 @@ def get_latest_sentiment():
         conn.close()
 
 
-# ── 예측 이력 관리 ──
+# ── 예측 이력 ──
 
 def _load_prediction_history():
     if PREDICTION_LOG.exists():
@@ -128,64 +128,34 @@ def _save_today_prediction(result, individual_dirs):
         "actual_direction": None,
         "actual_return": None,
     }
-    # 같은 날짜 덮어쓰기
     history = [h for h in history if h["date"] != result["date"]]
     history.append(entry)
-    # 최근 90일만 유지
     history = history[-90:]
     _save_prediction_history(history)
 
 
-# ── 복합 신뢰도 계산 ──
+# ── 복합 신뢰도 ──
 
-def compute_composite_confidence(details, regime, db_path=None):
-    """복합 신뢰도 계산
+def compute_composite_confidence(details, regime):
+    all_returns = details["individual_returns"]
+    agreement = details["agreement"][0]
 
-    구성요소:
-    1. 모델 합의도 (40%) - 9개 모델의 방향 일치율
-    2. 예측 분포 집중도 (30%) - 예측값이 한 방향으로 몰려있는 정도
-    3. 최근 앙상블 정확도 (30%) - 최근 30일 성과
-
-    Returns:
-        confidence (0~100)
-    """
-    all_returns = details["individual_returns"]  # (n_models, batch)
-    agreement = details["agreement"][0]  # 0~1
-
-    # 1) 합의도 점수 (0~100)
     agreement_score = agreement * 100
 
-    # 2) 예측 분포 집중도: 개별 예측값의 부호 강도
     individual_rets = all_returns[:, 0]
     mean_abs = np.mean(np.abs(individual_rets))
     spread = np.std(individual_rets)
-    # 평균 절대 예측이 크고 분산이 작으면 → 높은 집중도
-    if mean_abs > 0:
-        concentration = min(mean_abs / max(spread, 0.01), 5.0) / 5.0 * 100
-    else:
-        concentration = 0
+    concentration = min(mean_abs / max(spread, 0.01), 5.0) / 5.0 * 100 if mean_abs > 0 else 0
 
-    # 3) 최근 정확도
     recent_acc, n_days = get_recent_accuracy(30)
-    if recent_acc is not None and n_days >= 5:
-        accuracy_score = recent_acc
-    else:
-        accuracy_score = 50.0  # 기록 부족 시 기본값
+    accuracy_score = recent_acc if (recent_acc is not None and n_days >= 5) else 50.0
 
-    # 가중 합산
-    composite = (
-        agreement_score * 0.40 +
-        concentration * 0.30 +
-        accuracy_score * 0.30
-    )
+    composite = agreement_score * 0.40 + concentration * 0.30 + accuracy_score * 0.30
 
     logger.info(
         f"  복합신뢰도: {composite:.1f}% "
-        f"(합의={agreement_score:.0f}% × 0.4 + "
-        f"집중={concentration:.0f}% × 0.3 + "
-        f"실적={accuracy_score:.0f}% × 0.3)"
+        f"(합의={agreement_score:.0f}%×0.4 + 집중={concentration:.0f}%×0.3 + 실적={accuracy_score:.0f}%×0.3)"
     )
-
     return composite
 
 
@@ -207,18 +177,17 @@ def run_prediction():
     fe = FeatureEngineer()
     df = fe.build_dataset()
 
-    # 3. 앙상블 로드 + 동적 가중치 적용
+    # 3. 앙상블 + 동적 가중치
     ensemble, scaler, feature_names = load_ensemble()
 
     member_names = [f"{mt}_{sd}" for mt, sd in ENSEMBLE_MEMBERS]
     dyn_weights = get_dynamic_weights(member_names)
     if dyn_weights is not None:
-        logger.info(f"동적 가중치 적용: {dict(zip(member_names, dyn_weights.round(2)))}")
         for i, (model, _, mt) in enumerate(ensemble.models):
             ensemble.models[i] = (model, float(dyn_weights[i]), mt)
 
-    # 4. 레짐 감지
-    regime, regime_details = detect_regime()
+    # 4. 레짐
+    regime, _ = detect_regime()
     regime_label = REGIME_LABELS[regime]
     confidence_threshold = get_regime_threshold(regime)
 
@@ -231,12 +200,31 @@ def run_prediction():
     up_count = individual_dirs.sum()
     total_models = len(individual_dirs)
 
-    # 5a. 멀티스텝 예측 (1/2/3일 후)
+    # 5a. 메타 모델 (Stacking)
+    from models.meta_model import MetaModel
+    meta = MetaModel()
+    meta_proba = None
+    if meta.load():
+        individual_preds = details["individual_returns"][:, 0].reshape(1, -1)
+        meta_proba = meta.predict_proba(individual_preds)
+        if meta_proba is not None:
+            meta_proba = meta_proba[0]
+            # 메타 모델이 앙상블과 다른 방향이면 플래그
+            meta_up = meta_proba > 0.5
+            ensemble_up = pred_return > 0
+            if meta_up != ensemble_up:
+                logger.info(f"  ⚡ 메타 모델 불일치: meta={meta_proba:.1%} vs ensemble={'상승' if ensemble_up else '하락'}")
+
+    # 5b. MC Dropout 불확실성
+    from pipeline.mc_dropout import mc_dropout_predict
+    mc_mean, mc_std, mc_level, mc_emoji, mc_label = mc_dropout_predict(ensemble, X[-1:])
+
+    # 5c. 멀티스텝
     from pipeline.multistep import predict_multistep, format_multistep
     ms_dirs, ms_rets, ms_all_same = predict_multistep(ensemble, X[-1:])
     ms_str = format_multistep(ms_dirs)
 
-    # 5b. SHAP 피처 중요도
+    # 5d. SHAP
     from pipeline.shap_explain import get_top_features, format_shap_results
     top_features = get_top_features(ensemble, X[-1:], fe.feature_names, top_k=5)
     shap_str = format_shap_results(top_features)
@@ -244,13 +232,17 @@ def run_prediction():
     # 6. 복합 신뢰도
     confidence = compute_composite_confidence(details, regime)
 
-    # 멀티스텝 보너스: 3일 모두 같은 방향이면 +10%
     if ms_all_same:
         confidence = min(confidence + 10.0, 100.0)
         logger.info(f"  멀티스텝 보너스: +10% → {confidence:.1f}%")
 
+    # MC Dropout 고불확실성이면 신뢰도 감소
+    if mc_level == "high":
+        confidence *= 0.85
+        logger.info(f"  MC Dropout 고불확실성: 신뢰도 -15% → {confidence:.1f}%")
+
     # 7. 리스크 필터
-    vix_value, vix_date = get_latest_vix()
+    vix_value, _ = get_latest_vix()
     prev_return = get_previous_kospi_return()
     sentiment = get_latest_sentiment()
 
@@ -261,7 +253,7 @@ def run_prediction():
     signal_valid = True
 
     if vix_value and vix_value >= VIX_THRESHOLD:
-        risk_warnings.append(f"⚠ 고변동성 경고 (VIX={vix_value:.1f})")
+        risk_warnings.append(f"⚠ 고변동성 (VIX={vix_value:.1f})")
         signal_valid = False
 
     if abs(prev_return) >= LARGE_MOVE_THRESHOLD:
@@ -270,25 +262,30 @@ def run_prediction():
 
     if sentiment is not None and abs(sentiment) >= 0.3:
         if (pred_return > 0 and sentiment < -0.3) or (pred_return < 0 and sentiment > 0.3):
-            risk_warnings.append(f"⚠ 감성 역행 (감성={sentiment:+.2f})")
+            risk_warnings.append(f"⚠ 감성 역행")
             confidence *= 0.85
 
     if confidence < confidence_threshold:
-        risk_warnings.append(f"⚠ 신뢰도 부족 ({confidence:.1f}% < {confidence_threshold:.0f}% [{regime}])")
+        risk_warnings.append(f"⚠ 신뢰도 부족 ({confidence:.1f}%<{confidence_threshold:.0f}%)")
         signal_valid = False
 
     vix_status = "정상" if (vix_value and vix_value < VIX_THRESHOLD) else "경고"
     sent_str = f"{sentiment:+.2f}" if sentiment is not None else "N/A"
 
-    # 8. 결과 출력
+    # 8. 포트폴리오
+    from portfolio.simulator import execute_trade, format_portfolio_summary
+    execute_trade(today, signal_valid, "up" if pred_return > 0 else "down")
+    portfolio_str = format_portfolio_summary()
+
+    # 9. 결과 출력
     output_lines = [
         f"\n[{today}] 코스피 예측",
         f"  레짐: {regime_label}",
         f"  단기전망: {ms_str}",
         f"  방향: {direction}" if signal_valid else f"  방향: ― (신호 무력화)",
-        f"  예측 등락률: {sign}{pred_return:.2f}%",
+        f"  예측 등락률: {sign}{pred_return:.2f}% (±{mc_std:.2f}%) 불확실성: {mc_label} {mc_emoji}",
         f"  신뢰도: {confidence:.1f}% (임계={confidence_threshold:.0f}%)",
-        f"  모델 합의: {int(up_count)}/{total_models} 상승",
+        f"  모델 합의: {int(up_count)}/{total_models}",
         f"  VIX: {vix_value:.1f} ({vix_status})" if vix_value else "  VIX: N/A",
         f"  감성: {sent_str}",
         f"  주요 근거:",
@@ -296,10 +293,10 @@ def run_prediction():
     ]
     for w in risk_warnings:
         output_lines.append(f"  {w}")
-    if not signal_valid:
-        output_lines.append("  → 리스크 필터 발동: 거래 신호 없음")
     if signal_valid:
         output_lines.append("  → ✅ 거래 신호 활성")
+    else:
+        output_lines.append("  → 리스크 필터 발동")
 
     result_text = "\n".join(output_lines)
     logger.info(result_text)
@@ -323,12 +320,16 @@ def run_prediction():
         "confidence_threshold": confidence_threshold,
         "multistep": ms_str,
         "top_features": [(n, d) for n, d, _ in top_features],
+        "mc_std": round(mc_std, 3),
+        "mc_label": mc_label,
+        "mc_emoji": mc_emoji,
+        "portfolio": format_portfolio_summary(),
+        "meta_proba": round(float(meta_proba), 3) if meta_proba is not None else None,
     }
 
-    # 예측 이력 저장
     _save_today_prediction(result, individual_dirs)
 
-    # 9. 슬랙 알림
+    # 10. 슬랙 알림
     try:
         from notifications.slack_notifier import send_prediction_alert
         send_prediction_alert(result)
@@ -338,18 +339,15 @@ def run_prediction():
     return result
 
 
-# ── 정답 확인 (매일 오후 4시) ──
+# ── 정답 확인 ──
 
 def run_verify_yesterday():
-    """어제 예측의 정답을 확인하고 슬랙으로 전송"""
     logger.info("정답 확인 중...")
 
-    # 데이터 업데이트
     from collectors import YahooCollector, KRXCollector
     YahooCollector().collect()
     KRXCollector().collect()
 
-    # 최근 코스피 종가 2일분
     conn = sqlite3.connect(DB_PATH)
     rows = conn.execute("SELECT date, close FROM kospi_index ORDER BY date DESC LIMIT 2").fetchall()
     conn.close()
@@ -363,62 +361,67 @@ def run_verify_yesterday():
     actual_return = (today_close / yesterday_close - 1) * 100
     actual_up = actual_return > 0
 
-    # 예측 이력에서 해당 날짜 찾기
     history = _load_prediction_history()
-    target_entry = None
-    for entry in history:
-        if entry["date"] == yesterday_date or entry["date"] == today_date:
-            target_entry = entry
+    target = None
+    for e in history:
+        if e["date"] in (yesterday_date, today_date):
+            target = e
             break
-
-    if not target_entry:
-        # 가장 최근 미확인 예측
-        for entry in reversed(history):
-            if entry.get("actual_direction") is None:
-                target_entry = entry
+    if not target:
+        for e in reversed(history):
+            if e.get("actual_direction") is None:
+                target = e
                 break
-
-    if not target_entry:
+    if not target:
         logger.info("확인할 예측 없음")
         return
 
-    # 정답 기록
-    predicted_up = target_entry["predicted_direction"] == "up"
+    predicted_up = target["predicted_direction"] == "up"
     correct = predicted_up == actual_up
-    target_entry["actual_direction"] = "up" if actual_up else "down"
-    target_entry["actual_return"] = round(actual_return, 4)
+    target["actual_direction"] = "up" if actual_up else "down"
+    target["actual_return"] = round(actual_return, 4)
     _save_prediction_history(history)
 
-    # 동적 가중치 업데이트
+    # 동적 가중치
     member_names = [f"{mt}_{sd}" for mt, sd in ENSEMBLE_MEMBERS]
-    if target_entry.get("individual_dirs"):
-        update_weights(target_entry["individual_dirs"], actual_up, member_names)
+    if target.get("individual_dirs"):
+        update_weights(target["individual_dirs"], actual_up, member_names)
 
-    # 결과 출력
-    pred_dir_str = "▲ 상승" if predicted_up else "▼ 하락"
-    actual_dir_str = f"+{actual_return:.1f}%" if actual_return > 0 else f"{actual_return:.1f}%"
+    # 포트폴리오 정산
+    from portfolio.simulator import settle_trade
+    settle_trade(actual_return)
+
+    # 모니터링
+    from pipeline.monitor import check_model_performance
+    _, alert_msg = check_model_performance(history)
+
+    # 결과
+    pred_str = "▲ 상승" if predicted_up else "▼ 하락"
+    actual_str = f"+{actual_return:.1f}%" if actual_return > 0 else f"{actual_return:.1f}%"
     icon = "✅" if correct else "❌"
+    msg = f"{icon} 어제 예측 {'정답' if correct else '오답'}! ({pred_str} 예측 → 실제 {actual_str})"
 
-    msg = f"{icon} 어제 예측 {'정답' if correct else '오답'}! ({pred_dir_str} 예측 → 실제 {actual_dir_str})"
+    from portfolio.simulator import format_portfolio_summary
+    msg += f"\n\n{format_portfolio_summary()}"
+
     logger.info(msg)
 
-    # 슬랙 전송
     try:
         from notifications.slack_notifier import send_slack_message
         send_slack_message(msg)
+        if alert_msg:
+            send_slack_message(alert_msg)
     except Exception as e:
         logger.warning(f"슬랙 전송 실패: {e}")
 
     return {"correct": correct, "actual_return": actual_return}
 
 
-# ── 주간 리포트 (매주 월요일) ──
+# ── 주간 리포트 ──
 
 def run_weekly_report():
-    """주간 성과 리포트 생성 및 슬랙 전송"""
     logger.info("주간 리포트 생성 중...")
 
-    # 데이터 업데이트
     from collectors import YahooCollector, KRXCollector
     YahooCollector().collect()
     KRXCollector().collect()
@@ -428,7 +431,6 @@ def run_weekly_report():
         logger.info("예측 이력 없음")
         return
 
-    # 최근 7일 예측 필터
     today = datetime.now()
     week_ago = (today - timedelta(days=7)).strftime("%Y-%m-%d")
     weekly = [h for h in history if h["date"] >= week_ago]
@@ -437,7 +439,6 @@ def run_weekly_report():
         logger.info("이번 주 예측 없음")
         return
 
-    # 통계
     total = len(weekly)
     signaled = [h for h in weekly if h.get("signal_valid")]
     blocked = total - len(signaled)
@@ -445,27 +446,32 @@ def run_weekly_report():
     correct = sum(1 for h in verified if h["predicted_direction"] == h["actual_direction"])
     accuracy = correct / len(verified) * 100 if verified else 0
 
-    # 이번 주 코스피 수익률
     conn = sqlite3.connect(DB_PATH)
     rows = conn.execute(
         "SELECT close FROM kospi_index WHERE date >= ? ORDER BY date", (week_ago,)
     ).fetchall()
     conn.close()
-
-    if len(rows) >= 2:
-        weekly_return = (rows[-1][0] / rows[0][0] - 1) * 100
-    else:
-        weekly_return = 0
+    weekly_return = (rows[-1][0] / rows[0][0] - 1) * 100 if len(rows) >= 2 else 0
 
     first_date = weekly[0]["date"]
     last_date = weekly[-1]["date"]
+
+    from portfolio.simulator import format_portfolio_summary
+    portfolio = format_portfolio_summary()
 
     report = (
         f"📈 *주간 성과 리포트 ({first_date} ~ {last_date})*\n\n"
         f"예측 횟수: {total}회 (신호 {len(signaled)}회, 차단 {blocked}회)\n"
         f"정답률: {correct}/{len(verified)} ({accuracy:.1f}%)\n"
-        f"이번 주 코스피: {weekly_return:+.1f}%"
+        f"이번 주 코스피: {weekly_return:+.1f}%\n\n"
+        f"{portfolio}"
     )
+
+    # 차트 생성
+    from pipeline.chart import generate_weekly_chart
+    chart_path = generate_weekly_chart(history)
+    if chart_path:
+        report += f"\n\n📊 차트 저장: {chart_path}"
 
     logger.info(report)
 
@@ -478,102 +484,75 @@ def run_weekly_report():
     return {"total": total, "accuracy": accuracy, "weekly_return": weekly_return}
 
 
-# ── 신뢰도 실적 소급 초기화 ──
+# ── 소급 초기화 ──
 
 def backfill_prediction_history():
-    """과거 Walk-forward 결과를 prediction_history에 소급 입력"""
-    logger.info("신뢰도 실적 소급 초기화 중...")
+    logger.info("소급 초기화 중...")
 
-    conn = sqlite3.connect(DB_PATH)
-    rows = conn.execute(
-        "SELECT date, close FROM kospi_index ORDER BY date DESC LIMIT 60"
-    ).fetchall()
-    conn.close()
-
-    if len(rows) < 2:
-        logger.warning("코스피 데이터 부족")
-        return
-
-    rows = rows[::-1]  # 오래된→최신
-    history = _load_prediction_history()
-    existing_dates = {h["date"] for h in history}
-
-    # 모델 로드
     try:
-        ensemble, scaler, feature_names = load_ensemble()
+        ensemble, scaler, _ = load_ensemble()
     except FileNotFoundError:
-        logger.warning("모델 없음 - 소급 불가")
+        logger.warning("모델 없음")
         return
 
     fe = FeatureEngineer()
     df = fe.build_dataset()
     X_all, y_all, dates_all, _ = fe.prepare_sequences(df, scaler=scaler, fit_scaler=False)
 
+    history = _load_prediction_history()
+    existing = {h["date"] for h in history}
     member_names = [f"{mt}_{sd}" for mt, sd in ENSEMBLE_MEMBERS]
-    backfilled = 0
+    added = 0
 
     for i in range(max(0, len(X_all) - 30), len(X_all)):
-        pred_date = dates_all[i]
-        if pred_date in existing_dates:
+        if dates_all[i] in existing:
             continue
-
-        # 예측
         pred_ret, _, details = ensemble.predict(X_all[i:i+1])
-        individual_dirs = list(details["individual_returns"][:, 0] > 0)
+        dirs = list(details["individual_returns"][:, 0] > 0)
+        actual_up = y_all[i] > 0
 
-        # 실제 결과 (y_all에 이미 있음)
-        actual_ret = y_all[i]
-        actual_up = actual_ret > 0
-
-        entry = {
-            "date": pred_date,
+        history.append({
+            "date": dates_all[i],
             "predicted_direction": "up" if pred_ret[0] > 0 else "down",
             "predicted_return": round(float(pred_ret[0]), 4),
             "confidence": 50.0,
             "signal_valid": True,
-            "individual_dirs": [bool(d) for d in individual_dirs],
+            "individual_dirs": [bool(d) for d in dirs],
             "actual_direction": "up" if actual_up else "down",
-            "actual_return": round(float(actual_ret), 4),
-        }
-        history.append(entry)
-
-        # 동적 가중치 업데이트
-        update_weights(individual_dirs, actual_up, member_names)
-        backfilled += 1
+            "actual_return": round(float(y_all[i]), 4),
+        })
+        update_weights(dirs, actual_up, member_names)
+        added += 1
 
     history = history[-90:]
     _save_prediction_history(history)
-    logger.info(f"소급 완료: {backfilled}건 추가 (총 {len(history)}건)")
+
+    # 메타 모델 학습
+    from models.meta_model import train_meta_from_history
+    train_meta_from_history(ensemble, X_all[-60:], y_all[-60:])
+
+    logger.info(f"소급 완료: {added}건 (총 {len(history)}건)")
 
 
-# ── 주간 자동 재학습 ──
+# ── 주간 재학습 ──
 
 def run_retrain():
-    """전체 모델 재학습 + 동적 가중치 초기화"""
     import time
     start = time.time()
-
-    logger.info("=" * 50)
     logger.info("주간 모델 재학습 시작")
-    logger.info("=" * 50)
 
-    # 1. 데이터 최신화
     from collectors import YahooCollector, KRXCollector, FREDCollector
     YahooCollector().collect()
     KRXCollector().collect()
     FREDCollector().collect()
 
-    # 2. 앙상블 재학습
     from pipeline.train import walk_forward_train
     walk_forward_train("ensemble")
 
-    elapsed = int(time.time() - start)
-    minutes = elapsed // 60
-
-    # 3. 소급 초기화
     backfill_prediction_history()
 
-    # 4. 알림
+    elapsed = int(time.time() - start)
+
     conn = sqlite3.connect(DB_PATH)
     r = conn.execute("SELECT MIN(date), MAX(date) FROM kospi_index").fetchone()
     conn.close()
@@ -581,7 +560,7 @@ def run_retrain():
     msg = (
         f"🔄 *주간 모델 재학습 완료*\n\n"
         f"학습 데이터: {r[0]} ~ {r[1]}\n"
-        f"소요 시간: {minutes}분\n"
+        f"소요 시간: {elapsed // 60}분\n"
         f"앙상블: {len(ENSEMBLE_MEMBERS)}개 모델"
     )
     logger.info(msg)

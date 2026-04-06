@@ -1,0 +1,16 @@
+{
+  "capital": 102706886,
+  "initial_capital": 100000000,
+  "position": "long",
+  "trades": [
+    {
+      "date": "2026-04-06",
+      "action": "buy",
+      "capital_before": 100000000,
+      "actual_return": 2.7369,
+      "pnl": 2706886
+    }
+  ],
+  "wins": 1,
+  "losses": 0
+}

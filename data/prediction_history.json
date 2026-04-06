@@ -1,25 +1,5 @@
 [
   {
-    "date": "2026-04-06",
-    "predicted_direction": "up",
-    "predicted_return": 0.184,
-    "confidence": 73.4,
-    "signal_valid": true,
-    "individual_dirs": [
-      true,
-      true,
-      true,
-      true,
-      true,
-      true,
-      true,
-      true,
-      true
-    ],
-    "actual_direction": null,
-    "actual_return": null
-  },
-  {
     "date": "2026-02-20",
     "predicted_direction": "up",
     "predicted_return": 0.0858,
@@ -596,8 +576,8 @@
       false,
       true
     ],
-    "actual_direction": "down",
-    "actual_return": -4.4655
+    "actual_direction": "up",
+    "actual_return": 2.7369
   },
   {
     "date": "2026-04-03",
@@ -618,5 +598,25 @@
     ],
     "actual_direction": "up",
     "actual_return": 2.7369
+  },
+  {
+    "date": "2026-04-06",
+    "predicted_direction": "up",
+    "predicted_return": 0.1791,
+    "confidence": 71.4,
+    "signal_valid": true,
+    "individual_dirs": [
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true
+    ],
+    "actual_direction": null,
+    "actual_return": null
   }
 ]

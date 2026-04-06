@@ -1,7 +1,4 @@
-"""슬랙 웹훅 알림 모듈
-
-환경변수 SLACK_WEBHOOK_URL에 웹훅 URL을 설정하세요.
-"""
+"""슬랙 웹훅 알림 모듈"""
 import json
 import logging
 import os
@@ -15,7 +12,7 @@ SLACK_WEBHOOK_URL = os.environ.get("SLACK_WEBHOOK_URL", "")
 
 def _post_to_slack(text):
     if not SLACK_WEBHOOK_URL:
-        logger.warning("[Slack] SLACK_WEBHOOK_URL 환경변수 미설정")
+        logger.warning("[Slack] SLACK_WEBHOOK_URL 미설정")
         return False
     try:
         resp = requests.post(
@@ -27,7 +24,7 @@ def _post_to_slack(text):
         if resp.status_code == 200:
             logger.info("[Slack] 알림 전송 완료")
             return True
-        logger.warning(f"[Slack] 전송 실패: {resp.status_code} {resp.text}")
+        logger.warning(f"[Slack] 전송 실패: {resp.status_code}")
         return False
     except Exception as e:
         logger.warning(f"[Slack] 전송 오류: {e}")
@@ -39,7 +36,7 @@ def send_slack_message(text):
 
 
 def send_prediction_alert(result: dict):
-    """최종 포맷 슬랙 예측 알림"""
+    """최종 슬랙 예측 알림 — 모든 기능 통합"""
     date = result.get("date", "N/A")
     pred_ret = result.get("predicted_return", 0)
     confidence = result.get("confidence", 0)
@@ -52,6 +49,11 @@ def send_prediction_alert(result: dict):
     threshold = result.get("confidence_threshold", 65)
     ms_str = result.get("multistep", "")
     top_features = result.get("top_features", [])
+    mc_std = result.get("mc_std", 0)
+    mc_emoji = result.get("mc_emoji", "")
+    mc_label = result.get("mc_label", "")
+    portfolio = result.get("portfolio", "")
+    meta_proba = result.get("meta_proba")
 
     # 방향
     if not signal_valid:
@@ -64,10 +66,7 @@ def send_prediction_alert(result: dict):
     sign = "+" if pred_ret > 0 else ""
 
     # VIX
-    if vix is not None:
-        vix_str = f"{vix:.1f} ({'경고' if vix >= 30 else '정상'})"
-    else:
-        vix_str = "N/A"
+    vix_str = f"{vix:.1f} ({'경고' if vix >= 30 else '정상'})" if vix else "N/A"
 
     # 감성
     if sentiment is not None:
@@ -76,34 +75,33 @@ def send_prediction_alert(result: dict):
     else:
         sent_str = "N/A"
 
-    # 신호 상태
     status_line = "✅ 거래 신호 있음" if signal_valid else "⚠️ 리스크 필터 발동"
 
     # 주요 근거
     reasons = ""
     if top_features:
-        reason_lines = []
-        for i, (name, direction) in enumerate(top_features[:3], 1):
-            reason_lines.append(f"  {i}. {name} ({direction})")
-        reasons = "\n🔍 *주요 근거:*\n" + "\n".join(reason_lines)
+        lines = [f"  {i}. {n} ({d})" for i, (n, d) in enumerate(top_features[:3], 1)]
+        reasons = "\n🔍 *주요 근거:*\n" + "\n".join(lines)
 
     # 메시지 조립
-    text = (
-        f"📊 *[{date}] 코스피 예측*\n\n"
-        f"🌍 시장 레짐: {regime_label}\n"
-    )
+    text = f"📊 *[{date}] 코스피 예측*\n\n"
+    text += f"🌍 시장 레짐: {regime_label}\n"
 
     if ms_str:
         text += f"📅 단기 전망: {ms_str}\n"
 
     text += (
         f"\n방향: *{direction_str}*\n"
-        f"예측 등락률: *{sign}{pred_ret:.2f}%*\n"
+        f"예측 등락률: *{sign}{pred_ret:.2f}%* (±{mc_std:.2f}%) {mc_emoji} {mc_label}\n"
         f"신뢰도: {confidence:.1f}% (임계 {threshold:.0f}%)\n"
         f"모델 합의: {up_vote} ({agreement:.0f}%)\n"
-        f"VIX: {vix_str}\n"
-        f"감성: {sent_str}"
     )
+
+    if meta_proba is not None:
+        text += f"메타 모델: {'상승' if meta_proba > 0.5 else '하락'} ({meta_proba:.0%})\n"
+
+    text += f"VIX: {vix_str}\n"
+    text += f"감성: {sent_str}"
 
     if reasons:
         text += f"\n{reasons}"
@@ -113,5 +111,8 @@ def send_prediction_alert(result: dict):
     warnings = result.get("risk_warnings", [])
     if warnings:
         text += "\n" + "\n".join(warnings)
+
+    if portfolio:
+        text += f"\n\n{portfolio}"
 
     return _post_to_slack(text)
