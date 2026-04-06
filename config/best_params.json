@@ -1,0 +1,8 @@
+{
+  "learning_rate": 0.0003,
+  "dropout": 0.25,
+  "hidden_size": 128,
+  "num_layers": 2,
+  "batch_size": 64,
+  "direction_weight": 0.6
+}

@@ -36,6 +36,8 @@ class FeatureEngineer:
         df = self._add_global_market_features(df)
         df = self._add_cross_market_features(df)
         df = self._add_calendar_features(df)
+        df = self._add_investor_features(df)
+        df = self._add_sentiment_features(df)
         df = self._add_derived_features(df)
         df = df.dropna().reset_index(drop=True)
 
@@ -110,6 +112,23 @@ class FeatureEngineer:
             merged = merged.merge(fred, on="date", how="left")
         except Exception as e:
             logger.warning(f"fred_us10y 병합 실패: {e}")
+
+        # 외국인/기관 매매동향 (선택적)
+        try:
+            inv = pd.read_sql("SELECT date, foreign_net, inst_net FROM investor_trading", conn)
+            merged = merged.merge(inv, on="date", how="left")
+        except Exception as e:
+            logger.info(f"investor_trading 없음 (선택적): {e}")
+            merged["foreign_net"] = 0.0
+            merged["inst_net"] = 0.0
+
+        # 뉴스 감성 점수 (선택적)
+        try:
+            news = pd.read_sql("SELECT date, sentiment_score FROM news_sentiment", conn)
+            merged = merged.merge(news, on="date", how="left")
+        except Exception as e:
+            logger.info(f"news_sentiment 없음 (선택적): {e}")
+            merged["sentiment_score"] = 0.0
 
         conn.close()
 
@@ -278,6 +297,54 @@ class FeatureEngineer:
 
         # 분기말
         df["is_quarter_end"] = ((dates.dt.month % 3 == 0) & (dates.dt.day >= 25)).astype(float)
+
+        return df
+
+    # ── 외국인/기관 매매동향 피처 ──
+
+    def _add_investor_features(self, df):
+        """외국인/기관 순매수 파생 피처"""
+        for col in ["foreign_net", "inst_net"]:
+            if col not in df.columns or df[col].abs().sum() == 0:
+                continue
+
+            # 5일, 20일 이동평균
+            df[f"{col}_ma5"] = df[col].rolling(5).mean()
+            df[f"{col}_ma20"] = df[col].rolling(20).mean()
+
+            # 누적 순매수 방향 (5일)
+            df[f"{col}_cum5"] = df[col].rolling(5).sum()
+            df[f"{col}_direction"] = (df[f"{col}_cum5"] > 0).astype(float)
+
+            # 연속 순매수/순매도 일수
+            is_buy = (df[col] > 0).astype(int)
+            df[f"{col}_consec_buy"] = is_buy * (
+                is_buy.groupby((is_buy != is_buy.shift()).cumsum()).cumcount() + 1
+            )
+
+        return df
+
+    # ── 뉴스 감성 피처 ──
+
+    def _add_sentiment_features(self, df):
+        """뉴스 감성 점수 파생 피처"""
+        if "sentiment_score" not in df.columns:
+            return df
+
+        sent = df["sentiment_score"]
+
+        # 3일, 5일 이동평균
+        df["sentiment_ma3"] = sent.rolling(3).mean()
+        df["sentiment_ma5"] = sent.rolling(5).mean()
+
+        # 감성 변화율
+        df["sentiment_change"] = sent.diff()
+
+        # 감성 레벨 (강한 부정/부정/중립/긍정/강한 긍정)
+        df["sentiment_level"] = pd.cut(
+            sent, bins=[-1.1, -0.5, -0.1, 0.1, 0.5, 1.1],
+            labels=[-2, -1, 0, 1, 2]
+        ).astype(float)
 
         return df
 

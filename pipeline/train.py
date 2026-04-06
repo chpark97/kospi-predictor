@@ -17,6 +17,7 @@ from config.settings import (
 from models.ensemble import ENSEMBLE_MEMBERS, EnsemblePredictor, create_model
 from preprocessing.feature_engineer import FeatureEngineer
 from evaluation.backtest import evaluate_predictions
+from pipeline.optuna_tuner import load_best_params
 
 logger = logging.getLogger(__name__)
 
@@ -127,6 +128,13 @@ def train_single_model(model, train_loader, val_loader, epochs=None, lr=None,
 
 def walk_forward_ensemble():
     """앙상블 Walk-forward validation"""
+    # Optuna 최적 파라미터 로드
+    best_params = load_best_params()
+    if best_params:
+        logger.info(f"Optuna 최적 파라미터 로드: {best_params}")
+    else:
+        best_params = {}
+
     fe = FeatureEngineer()
     df = fe.build_dataset()
 
@@ -184,11 +192,15 @@ def walk_forward_ensemble():
             train_loader = DataLoader(train_ds, batch_size=BATCH_SIZE, shuffle=True, drop_last=True)
             val_loader = DataLoader(val_ds, batch_size=BATCH_SIZE)
 
-            model, val_loss, val_da = train_single_model(model, train_loader, val_loader)
+            hp_lr = best_params.get("learning_rate", LEARNING_RATE)
+            hp_bs = best_params.get("batch_size", BATCH_SIZE)
+            train_loader = DataLoader(train_ds, batch_size=hp_bs, shuffle=True, drop_last=True)
+            val_loader = DataLoader(val_ds, batch_size=hp_bs)
+
+            model, val_loss, val_da = train_single_model(model, train_loader, val_loader, lr=hp_lr)
             logger.info(f"    → val_loss={val_loss:.4f}, val_DA={val_da:.1f}%")
 
-            # 가중치: val_da가 높을수록 큰 가중치
-            weight = max(val_da - 45, 1.0)  # 45% 이하는 최소 가중치
+            weight = max(val_da - 45, 1.0)
             ensemble.add_model(model, weight, model_type)
 
         # ── 앙상블 테스트 ──
@@ -354,7 +366,7 @@ if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser()
     parser.add_argument("--model", default="ensemble",
-                        choices=["baseline", "attention", "cnn", "ensemble"])
+                        choices=["baseline", "attention", "cnn", "transformer", "ensemble"])
     args = parser.parse_args()
 
     walk_forward_train(args.model)

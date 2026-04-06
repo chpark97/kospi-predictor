@@ -93,16 +93,32 @@ def get_previous_kospi_return():
         conn.close()
 
 
+def get_latest_sentiment():
+    """최신 뉴스 감성 점수 조회"""
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        result = conn.execute(
+            "SELECT sentiment_score FROM news_sentiment ORDER BY date DESC LIMIT 1"
+        ).fetchone()
+        return result[0] if result else None
+    except sqlite3.OperationalError:
+        return None
+    finally:
+        conn.close()
+
+
 def run_prediction():
     """일일 예측 실행"""
     today = datetime.now().strftime("%Y-%m-%d")
 
     # 1. 데이터 업데이트
     logger.info("데이터 업데이트 중...")
-    from collectors import YahooCollector, KRXCollector, FREDCollector
+    from collectors import YahooCollector, KRXCollector, FREDCollector, InvestorCollector, NewsCollector
     YahooCollector().collect()
     KRXCollector().collect()
     FREDCollector().collect()
+    InvestorCollector().collect()
+    NewsCollector().collect(days_back=3)
 
     # 2. 피처 생성
     fe = FeatureEngineer()
@@ -123,9 +139,10 @@ def run_prediction():
     total_models = len(individual_dirs)
     agreement_pct = details["agreement"][0] * 100
 
-    # 5. 리스크 필터
+    # 5. 리스크 필터 + 감성 필터
     vix_value, vix_date = get_latest_vix()
     prev_return = get_previous_kospi_return()
+    sentiment = get_latest_sentiment()
 
     direction = "▲ 상승" if pred_return > 0 else "▼ 하락"
     sign = "+" if pred_return > 0 else ""
@@ -141,11 +158,18 @@ def run_prediction():
         risk_warnings.append(f"⚠ 전일 대폭 변동 ({prev_return:+.2f}%) - 신뢰도 하향")
         confidence *= 0.8
 
+    # 감성 필터: 예측 방향과 감성이 반대일 때 신뢰도 하향
+    if sentiment is not None and abs(sentiment) >= 0.3:
+        if (pred_return > 0 and sentiment < -0.3) or (pred_return < 0 and sentiment > 0.3):
+            risk_warnings.append(f"⚠ 감성 역행 (감성={sentiment:+.2f} vs 예측={sign}{pred_return:.2f}%) - 신뢰도 하향")
+            confidence *= 0.85
+
     if confidence < CONFIDENCE_THRESHOLD:
         risk_warnings.append(f"⚠ 낮은 확신도 ({confidence:.1f}% < {CONFIDENCE_THRESHOLD}%) - 신호 미출력")
         signal_valid = False
 
     vix_status = "정상" if (vix_value and vix_value < VIX_THRESHOLD) else "경고"
+    sent_str = f"{sentiment:+.2f}" if sentiment is not None else "N/A"
 
     # 6. 결과 출력
     output_lines = [
@@ -155,6 +179,7 @@ def run_prediction():
         f"  신뢰도: {confidence:.1f}%",
         f"  모델 합의: {int(up_count)}/{total_models} 상승 (합의도 {agreement_pct:.0f}%)",
         f"  VIX: {vix_value:.1f} ({vix_status})" if vix_value else "  VIX: N/A",
+        f"  감성: {sent_str}",
     ]
 
     for warning in risk_warnings:

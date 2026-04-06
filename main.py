@@ -101,11 +101,15 @@ def main():
     # train 명령
     train_parser = subparsers.add_parser("train", help="모델 학습 (Walk-forward)")
     train_parser.add_argument("--model", default="ensemble",
-                              choices=["baseline", "attention", "cnn", "ensemble"],
+                              choices=["baseline", "attention", "cnn", "transformer", "ensemble"],
                               help="모델 타입 (ensemble: 앙상블 추천)")
 
     # predict 명령
     subparsers.add_parser("predict", help="일일 예측 실행")
+
+    # tune 명령
+    tune_parser = subparsers.add_parser("tune", help="Optuna 하이퍼파라미터 튜닝")
+    tune_parser.add_argument("--trials", type=int, default=30, help="탐색 횟수")
 
     args = parser.parse_args()
 
@@ -119,6 +123,9 @@ def main():
     elif args.command == "predict":
         from pipeline.predict import run_prediction
         run_prediction()
+    elif args.command == "tune":
+        from pipeline.optuna_tuner import run_optuna_tuning
+        run_optuna_tuning(n_trials=args.trials)
     else:
         parser.print_help()
 
