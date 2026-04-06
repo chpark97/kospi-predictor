@@ -310,19 +310,9 @@ def run_prediction():
     top_features = get_top_features(ensemble, X[-1:], fe.feature_names, top_k=5)
     shap_str = format_shap_results(top_features)
 
-    # 6. 복합 신뢰도
-    confidence = compute_composite_confidence(details, regime, history)
-
-    if ms_all_same:
-        confidence = min(confidence + 10.0, 100.0)
-        logger.info(f"  멀티스텝 보너스: +10% → {confidence:.1f}%")
-
-    # MC Dropout 고불확실성이면 신뢰도 감소
-    if mc_level == "high":
-        confidence *= 0.85
-        logger.info(f"  MC Dropout 고불확실성: 신뢰도 -15% → {confidence:.1f}%")
-
-    # 7. 리스크 필터
+    # 6. 리스크 필터 (신뢰도 계산 전에 먼저 적용)
+    # 기존 순서: 신뢰도 → 멀티스텝 보너스 → MC Dropout → 리스크 필터
+    # 변경 순서: 리스크 필터 → 신뢰도 계산 → MC Dropout → 임계값 비교
     vix_value, _ = get_latest_vix()
     prev_return = get_previous_kospi_return()
     sentiment = get_latest_sentiment()
@@ -332,6 +322,7 @@ def run_prediction():
 
     risk_warnings = []
     signal_valid = True
+    risk_confidence_penalty = 1.0  # 리스크에 의한 신뢰도 감쇄 계수
 
     # 지정학적 리스크 강제 중단
     if geo_forced_stop:
@@ -344,12 +335,25 @@ def run_prediction():
 
     if abs(prev_return) >= LARGE_MOVE_THRESHOLD:
         risk_warnings.append(f"⚠ 전일 대폭 변동 ({prev_return:+.2f}%)")
-        confidence *= 0.8
+        risk_confidence_penalty *= 0.8
 
     if sentiment is not None and abs(sentiment) >= 0.3:
         if (pred_return > 0 and sentiment < -0.3) or (pred_return < 0 and sentiment > 0.3):
             risk_warnings.append(f"⚠ 감성 역행")
-            confidence *= 0.85
+            risk_confidence_penalty *= 0.85
+
+    # 7. 복합 신뢰도 (리스크 감쇄 후 계산)
+    confidence = compute_composite_confidence(details, regime, history)
+    confidence *= risk_confidence_penalty
+    if risk_confidence_penalty < 1.0:
+        logger.info(f"  리스크 감쇄: ×{risk_confidence_penalty:.2f} → {confidence:.1f}%")
+
+    # 멀티스텝 결과는 슬랙 메시지에만 표시, 신뢰도 보너스 없음
+
+    # MC Dropout 고불확실성이면 신뢰도 감소
+    if mc_level == "high":
+        confidence *= 0.85
+        logger.info(f"  MC Dropout 고불확실성: 신뢰도 -15% → {confidence:.1f}%")
 
     if confidence < confidence_threshold:
         risk_warnings.append(f"⚠ 신뢰도 부족 ({confidence:.1f}%<{confidence_threshold:.0f}%)")
