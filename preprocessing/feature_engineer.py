@@ -140,11 +140,22 @@ class FeatureEngineer:
             except Exception:
                 merged[name] = np.nan
 
+        # ECOS 매크로 지표 (선택적)
+        try:
+            ecos = pd.read_sql("SELECT * FROM ecos_macro", conn)
+            merged = merged.merge(ecos, on="date", how="left")
+        except Exception as e:
+            logger.info(f"ecos_macro 없음 (선택적): {e}")
+            for col in ["base_rate", "cpi_index", "export_index"]:
+                merged[col] = 0.0
+
         conn.close()
 
         merged = merged.sort_values("date").reset_index(drop=True)
         numeric_cols = merged.select_dtypes(include=[np.number]).columns
         merged[numeric_cols] = merged[numeric_cols].ffill().bfill()
+        # 여전히 NaN인 컬럼은 0으로 채움 (선택적 데이터원)
+        merged[numeric_cols] = merged[numeric_cols].fillna(0)
 
         logger.info(f"병합 완료: {merged.shape}")
         return merged
@@ -385,6 +396,17 @@ class FeatureEngineer:
         if "kosdaq" in df.columns and df["kosdaq"].notna().sum() > 20:
             df["kosdaq_ret1d"] = df["kosdaq"].pct_change(1).shift(1) * 100
             df["kospi_kosdaq_ratio"] = (close / df["kosdaq"]).shift(1)
+
+        # ECOS 매크로 파생 피처 (실제 데이터 있을 때만)
+        if "base_rate" in df.columns and df["base_rate"].replace(0, np.nan).notna().sum() > 5:
+            df["base_rate_change"] = df["base_rate"].diff().fillna(0)
+            df["base_rate_level"] = df["base_rate"]
+
+        if "cpi_index" in df.columns and df["cpi_index"].replace(0, np.nan).notna().sum() > 5:
+            df["cpi_mom"] = df["cpi_index"].pct_change().fillna(0) * 100
+
+        if "export_index" in df.columns and df["export_index"].replace(0, np.nan).notna().sum() > 5:
+            df["export_growth"] = df["export_index"].pct_change().fillna(0) * 100
 
         return df
 

@@ -602,8 +602,8 @@
   {
     "date": "2026-04-06",
     "predicted_direction": "up",
-    "predicted_return": 0.2089,
-    "confidence": 70.0,
+    "predicted_return": 0.1714,
+    "confidence": 70.5,
     "signal_valid": true,
     "individual_dirs": [
       true,

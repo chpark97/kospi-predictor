@@ -1,16 +1,22 @@
 {
-  "capital": 102706886,
+  "capital": 0,
   "initial_capital": 100000000,
   "position": "long",
+  "entry_price": 5377.2998046875,
+  "entry_date": "2026-04-06",
+  "invested_amount": 99985000,
+  "sizing_ratio": 1.0,
+  "hold_days": 0,
   "trades": [
     {
       "date": "2026-04-06",
       "action": "buy",
-      "capital_before": 100000000,
-      "actual_return": 2.7369,
-      "pnl": 2706886
+      "price": 5377.2998046875,
+      "exit_reason": null
     }
   ],
-  "wins": 1,
-  "losses": 0
+  "wins": 0,
+  "losses": 0,
+  "peak_capital": 100000000,
+  "max_drawdown": -0.01
 }

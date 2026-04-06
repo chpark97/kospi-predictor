@@ -166,13 +166,14 @@ def run_prediction():
 
     # 1. 데이터 업데이트
     logger.info("데이터 업데이트 중...")
-    from collectors import YahooCollector, KRXCollector, FREDCollector, InvestorCollector, NewsCollector, KoreaSpecificCollector
+    from collectors import YahooCollector, KRXCollector, FREDCollector, InvestorCollector, NewsCollector, KoreaSpecificCollector, ECOSCollector
     YahooCollector().collect()
     KRXCollector().collect()
     FREDCollector().collect()
     InvestorCollector().collect()
     NewsCollector().collect(days_back=3)
     KoreaSpecificCollector().collect()
+    ECOSCollector().collect()
 
     # 2. 피처 생성
     fe = FeatureEngineer()
@@ -285,9 +286,10 @@ def run_prediction():
     vix_status = "정상" if (vix_value and vix_value < VIX_THRESHOLD) else "경고"
     sent_str = f"{sentiment:+.2f}" if sentiment is not None else "N/A"
 
-    # 8. 포트폴리오
+    # 8. 포트폴리오 (손절/익절 + 포지션 사이징)
     from portfolio.simulator import execute_trade, format_portfolio_summary
-    execute_trade(today, signal_valid, "up" if pred_return > 0 else "down")
+    execute_trade(today, signal_valid, "up" if pred_return > 0 else "down",
+                  mc_level=mc_level)
     portfolio_str = format_portfolio_summary()
 
     # 9. 결과 출력

@@ -74,6 +74,7 @@ def main():
     sub.add_parser("retrain", help="모델 재학습")
     sub.add_parser("backfill", help="과거 예측 실적 소급")
     sub.add_parser("dashboard", help="웹 대시보드 실행 (localhost:8000)")
+    sub.add_parser("backtest", help="손절/익절 전략 백테스팅")
 
     tn = sub.add_parser("tune", help="Optuna 하이퍼파라미터 튜닝")
     tn.add_argument("--trials", type=int, default=30)
@@ -109,6 +110,9 @@ def main():
         from dashboard.app import app
         import uvicorn
         uvicorn.run(app, host="0.0.0.0", port=8000)
+    elif args.command == "backtest":
+        from portfolio.simulator import backtest_strategy
+        backtest_strategy()
     else:
         parser.print_help()
 
