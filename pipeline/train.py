@@ -13,6 +13,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from config.settings import (
     BATCH_SIZE, EARLY_STOPPING_PATIENCE, EPOCHS, LEARNING_RATE,
     MIN_EPOCHS, WALK_FORWARD_SPLITS,
+    USE_ROLLING_WALK_FORWARD, ROLLING_TRAIN_YEARS, ROLLING_START_YEAR,
 )
 from models.ensemble import ENSEMBLE_MEMBERS, EnsemblePredictor, create_model
 from preprocessing.feature_engineer import FeatureEngineer
@@ -173,6 +174,23 @@ def train_single_model(model, train_loader, val_loader, epochs=None, lr=None,
     return model, best_val_loss, best_val_da
 
 
+def _generate_rolling_splits(df):
+    """Rolling window 방식 split 생성"""
+    from datetime import datetime
+    dates = sorted(df["date"].unique())
+    max_year = int(dates[-1][:4])
+
+    splits = []
+    for test_year in range(ROLLING_START_YEAR, max_year + 1):
+        train_start_year = test_year - ROLLING_TRAIN_YEARS
+        splits.append({
+            "train_end": f"{test_year - 1}-12-31",
+            "test_start": f"{test_year}-01-01",
+            "test_end": f"{test_year}-12-31",
+        })
+    return splits
+
+
 def walk_forward_ensemble():
     """앙상블 Walk-forward validation"""
     # Optuna 최적 파라미터 로드
@@ -188,7 +206,14 @@ def walk_forward_ensemble():
     SAVE_DIR.mkdir(parents=True, exist_ok=True)
     all_results = []
 
-    for i, split in enumerate(WALK_FORWARD_SPLITS):
+    # Rolling window 또는 고정 split 선택
+    if USE_ROLLING_WALK_FORWARD:
+        splits = _generate_rolling_splits(df)
+        logger.info(f"Rolling Walk-Forward: {len(splits)} splits (train={ROLLING_TRAIN_YEARS}yr)")
+    else:
+        splits = WALK_FORWARD_SPLITS
+
+    for i, split in enumerate(splits):
         train_end = split["train_end"]
         test_start = split["test_start"]
         test_end = split["test_end"]
@@ -247,7 +272,10 @@ def walk_forward_ensemble():
             model, val_loss, val_da = train_single_model(model, train_loader, val_loader, lr=hp_lr)
             logger.info(f"    → val_loss={val_loss:.4f}, val_DA={val_da:.1f}%")
 
-            weight = max(val_da - 45, 1.0)
+            # Recency bias: 최신 split일수록 높은 가중치 부여
+            # split 0 → 1.0x, split 1 → 1.5x, split 2 → 2.0x, split 3 → 2.5x
+            recency_factor = 1.0 + 0.5 * i
+            weight = max(val_da - 45, 1.0) * recency_factor
             ensemble.add_model(model, weight, model_type)
 
         # ── 앙상블 테스트 ──

@@ -368,11 +368,8 @@ def run_prediction():
     # 편향 보정 인라인 메시지
     bias_inline = None
     if bias_msg:
-        from pipeline.calibration import detect_bias
-        up_ratio, _, _ = detect_bias(_load_prediction_history())
-        target_ratio = 0.55
-        scale = target_ratio / up_ratio if up_ratio > 0 else 1.0
-        bias_inline = f"scale {scale:.2f} 적용"
+        from pipeline.calibration import get_calibration_inline
+        bias_inline = get_calibration_inline(_load_prediction_history())
 
     result = {
         "date": today,
@@ -592,12 +589,20 @@ def backfill_prediction_history():
         dirs = list(details["individual_returns"][:, 0] > 0)
         actual_up = y_all[i] > 0
 
+        # 복합 신뢰도 계산 (하드코딩 50.0 대신 실제 계산)
+        try:
+            from models.regime import detect_regime
+            regime, _ = detect_regime()
+        except Exception:
+            regime = "sideways"
+        confidence = compute_composite_confidence(details, regime)
+
         history.append({
             "date": dates_all[i],
             "predicted_direction": "up" if pred_ret[0] > 0 else "down",
             "predicted_return": round(float(pred_ret[0]), 4),
-            "confidence": 50.0,
-            "signal_valid": True,
+            "confidence": round(confidence, 1),
+            "signal_valid": confidence >= 50.0,
             "individual_dirs": [bool(d) for d in dirs],
             "actual_direction": "up" if actual_up else "down",
             "actual_return": round(float(y_all[i]), 4),

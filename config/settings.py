@@ -67,4 +67,11 @@ WALK_FORWARD_SPLITS = [
     {"train_end": "2021-12-31", "test_start": "2022-01-01", "test_end": "2022-12-31"},
     {"train_end": "2022-12-31", "test_start": "2023-01-01", "test_end": "2023-12-31"},
     {"train_end": "2023-12-31", "test_start": "2024-01-01", "test_end": "2024-12-31"},
+    {"train_end": "2024-12-31", "test_start": "2025-01-01", "test_end": "2025-12-31"},
 ]
+
+# Rolling window 방식 (WALK_FORWARD_SPLITS 대신 사용 가능)
+# 최근 N년 학습 → 다음 1년 테스트, 1년씩 이동
+USE_ROLLING_WALK_FORWARD = False  # True면 rolling 방식 사용
+ROLLING_TRAIN_YEARS = 5           # 학습 윈도우 크기 (년)
+ROLLING_START_YEAR = 2020         # 첫 테스트 시작 연도

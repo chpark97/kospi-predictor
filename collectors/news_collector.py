@@ -1,7 +1,8 @@
-"""뉴스 감성 분석 수집기 (RSS 기반)
+"""뉴스 감성 분석 수집기 (RSS 기반) v2
 
 다중 RSS 소스에서 금융 뉴스 제목을 수집하고
-한국어 감성 사전으로 점수를 산출합니다.
+1) transformers 한국어 감성 모델 (snunlp/KR-FinBert-SC) 우선
+2) 기존 키워드 사전 방식 fallback
 """
 import logging
 import sqlite3
@@ -27,7 +28,7 @@ RSS_FEEDS = [
 # 네이버 금융 뉴스 URL (RSS 불가 시 fallback)
 NAVER_FINANCE_URL = "https://finance.naver.com/news/mainnews.naver"
 
-# 한국어 금융 감성 사전
+# 한국어 금융 감성 사전 (fallback)
 POSITIVE_WORDS = [
     "상승", "급등", "강세", "호재", "반등", "회복", "최고", "돌파", "랠리",
     "성장", "호조", "개선", "흑자", "수혜", "기대", "긍정", "상향", "매수",
@@ -46,6 +47,95 @@ NEGATIVE_WORDS = [
     "비관", "동반하락", "급전직하", "투매", "약보합", "최저치",
 ]
 
+# ── Transformer 모델 (Lazy Loading + 캐싱) ──
+
+_finbert_model = None
+_finbert_tokenizer = None
+_finbert_available = None  # None=미확인, True/False
+
+
+def _load_finbert():
+    """KR-FinBert 모델 lazy loading + 캐싱"""
+    global _finbert_model, _finbert_tokenizer, _finbert_available
+
+    if _finbert_available is False:
+        return None, None
+
+    if _finbert_model is not None:
+        return _finbert_model, _finbert_tokenizer
+
+    try:
+        from transformers import AutoModelForSequenceClassification, AutoTokenizer
+        import torch
+
+        model_name = "snunlp/KR-FinBert-SC"
+        logger.info(f"[News] KR-FinBert 모델 로딩: {model_name}")
+
+        _finbert_tokenizer = AutoTokenizer.from_pretrained(model_name)
+        _finbert_model = AutoModelForSequenceClassification.from_pretrained(model_name)
+        _finbert_model.eval()
+        _finbert_available = True
+
+        logger.info("[News] KR-FinBert 모델 로딩 완료")
+        return _finbert_model, _finbert_tokenizer
+
+    except ImportError:
+        logger.info("[News] transformers 미설치 → 키워드 방식 사용")
+        _finbert_available = False
+        return None, None
+    except Exception as e:
+        logger.warning(f"[News] KR-FinBert 로딩 실패: {e} → 키워드 방식 fallback")
+        _finbert_available = False
+        return None, None
+
+
+def _compute_finbert_sentiment(titles, batch_size=16):
+    """KR-FinBert 기반 감성 점수 산출
+
+    모델 출력: [negative, neutral, positive] → softmax 확률
+    점수 = (positive - negative) 평균
+    """
+    model, tokenizer = _load_finbert()
+    if model is None:
+        return None
+
+    try:
+        import torch
+        scores = []
+
+        for i in range(0, len(titles), batch_size):
+            batch = titles[i:i + batch_size]
+            # 제목 길이 제한 (토큰 길이 초과 방지)
+            batch = [t[:128] for t in batch]
+
+            inputs = tokenizer(
+                batch,
+                padding=True,
+                truncation=True,
+                max_length=128,
+                return_tensors="pt",
+            )
+
+            with torch.no_grad():
+                outputs = model(**inputs)
+                probs = torch.softmax(outputs.logits, dim=-1)
+
+            # [negative, neutral, positive]
+            for j in range(len(batch)):
+                neg = probs[j][0].item()
+                pos = probs[j][2].item()
+                scores.append(pos - neg)
+
+        if not scores:
+            return None
+
+        avg_score = sum(scores) / len(scores)
+        return round(avg_score, 4)
+
+    except Exception as e:
+        logger.warning(f"[News] FinBert 추론 실패: {e}")
+        return None
+
 
 class NewsCollector:
     def __init__(self, db_path=None):
@@ -63,7 +153,7 @@ class NewsCollector:
             return None
 
     def collect(self, start_date=None, end_date=None, days_back=5):
-        """뉴스 감성 수집 — RSS 우선, fallback 네이버"""
+        """뉴스 감성 수집 — FinBert 우선, 키워드 fallback"""
         conn = sqlite3.connect(self.db_path)
         last_date = self._get_last_date(conn)
         today_str = datetime.now().strftime("%Y-%m-%d")
@@ -86,7 +176,14 @@ class NewsCollector:
             conn.close()
             return
 
-        score = self._compute_sentiment(titles)
+        # 1차: FinBert 모델 시도
+        score = _compute_finbert_sentiment(titles)
+        method = "FinBert"
+
+        # 2차: 키워드 fallback
+        if score is None:
+            score = self._compute_keyword_sentiment(titles)
+            method = "keyword"
 
         import pandas as pd
         df = pd.DataFrame([{"date": today_str, "sentiment_score": score}])
@@ -98,7 +195,7 @@ class NewsCollector:
             pass
 
         df.to_sql(TABLE_NAME, conn, if_exists="append", index=False)
-        logger.info(f"[News] 감성 점수: {score:+.3f} (뉴스 {len(titles)}건)")
+        logger.info(f"[News] 감성 점수: {score:+.3f} ({method}, 뉴스 {len(titles)}건)")
         conn.close()
 
     def _collect_rss_titles(self):
@@ -172,8 +269,8 @@ class NewsCollector:
             logger.debug(f"[News/naver] 실패: {e}")
             return []
 
-    def _compute_sentiment(self, titles):
-        """뉴스 제목 목록에서 감성 점수 산출"""
+    def _compute_keyword_sentiment(self, titles):
+        """키워드 기반 감성 점수 (fallback)"""
         pos = 0
         neg = 0
 
@@ -191,3 +288,6 @@ class NewsCollector:
 
         score = (pos - neg) / total
         return round(score, 4)
+
+    # 하위 호환: 기존 이름 유지
+    _compute_sentiment = _compute_keyword_sentiment

@@ -94,6 +94,26 @@ class EnsemblePredictor:
         up_vote_ratio = np.average(directions, axis=0, weights=weights)
         agreement = np.abs(up_vote_ratio - 0.5) * 2
 
+        # 투표-수익률 불일치 보정: 가중 투표 과반이 하락인데
+        # 가중 평균 수익률이 양수면 부호를 뒤집어 투표 방향에 맞춤
+        for idx in range(pred_return.shape[0] if pred_return.ndim > 0 else 1):
+            vote = up_vote_ratio[idx] if up_vote_ratio.ndim > 0 else up_vote_ratio
+            ret = pred_return[idx] if pred_return.ndim > 0 else pred_return
+            if vote < 0.5 and ret > 0:
+                # 하락 과반인데 수익률 양수 → 부호 반전
+                if pred_return.ndim > 0:
+                    pred_return[idx] = -abs(ret) * (1 - vote)  # 과반 비율로 축소
+                else:
+                    pred_return = -abs(ret) * (1 - vote)
+                logger.debug(f"  [Ensemble] 투표-수익률 불일치 보정: vote={vote:.2f}, ret {ret:.4f} → {pred_return if pred_return.ndim == 0 else pred_return[idx]:.4f}")
+            elif vote > 0.5 and ret < 0:
+                # 상승 과반인데 수익률 음수 → 부호 반전
+                if pred_return.ndim > 0:
+                    pred_return[idx] = abs(ret) * vote
+                else:
+                    pred_return = abs(ret) * vote
+                logger.debug(f"  [Ensemble] 투표-수익률 불일치 보정: vote={vote:.2f}, ret {ret:.4f} → {pred_return if pred_return.ndim == 0 else pred_return[idx]:.4f}")
+
         avg_conf = np.average(all_confs, axis=0, weights=weights)
         confidence = avg_conf * (0.5 + 0.5 * agreement)
 

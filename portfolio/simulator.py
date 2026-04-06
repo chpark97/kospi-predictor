@@ -81,6 +81,19 @@ def _classify_etf_type(etf_name):
     return "normal"
 
 
+def _get_total_value(pf, current_price=None):
+    """총자산 = capital + 미실현 평가금 (정확한 계산)"""
+    total = pf["capital"]
+    if pf["position"] != "cash" and pf["invested_amount"] > 0 and pf.get("entry_price"):
+        if current_price and pf["entry_price"]:
+            multiplier = pf.get("etf_multiplier", 1.0)
+            kospi_change = (current_price / pf["entry_price"] - 1)
+            total += pf["invested_amount"] * (1 + kospi_change * multiplier)
+        else:
+            total += pf["invested_amount"]
+    return total
+
+
 def execute_etf_trade(date, signal_valid, etf_signal, current_price=None):
     """ETF 전략 기반 매매 실행
 
@@ -112,7 +125,6 @@ def execute_etf_trade(date, signal_valid, etf_signal, current_price=None):
         pf["hold_days"] += 1
         multiplier = pf.get("etf_multiplier", 1.0)
         kospi_change = (current_price / pf["entry_price"] - 1)
-        # ETF 수익률 = 코스피 수익률 × multiplier (일별 복리)
         unrealized = kospi_change * multiplier * 100
 
         # 손절
@@ -135,6 +147,8 @@ def execute_etf_trade(date, signal_valid, etf_signal, current_price=None):
                 action = "sell"
                 exit_reason = "방향 전환"
 
+        # 같은 방향 신호가 다시 올 때는 중복 매수 방지 (hold 유지)
+
     # === 현금 보유 중 ===
     elif pf["position"] == "cash":
         if signal_valid and etf_signal.get("etf_name") != "현금":
@@ -142,31 +156,42 @@ def execute_etf_trade(date, signal_valid, etf_signal, current_price=None):
 
     # 매매 실행
     if action == "buy":
+        # 포지션 사이징: 총자산 기준 (capital이 0이어도 정확)
+        total_value = _get_total_value(pf, current_price)
         sizing = etf_signal.get("sizing_ratio", 0.6)
-        invested = pf["capital"] * sizing
-        commission = invested * COMMISSION_RATE
-        pf["invested_amount"] = round(invested - commission)
-        pf["capital"] -= round(invested)
-        pf["entry_price"] = current_price
-        pf["entry_date"] = date
-        pf["hold_days"] = 0
-        pf["sizing_ratio"] = sizing
-        pf["position"] = etf_signal.get("direction", "long")
-        pf["etf_name"] = etf_signal.get("etf_name")
-        pf["etf_multiplier"] = etf_signal.get("multiplier", 1.0)
+        # capital 기준이 아닌 총자산 기준
+        invest_target = total_value * sizing
+        # capital에서 실제 차감 가능한 금액으로 제한
+        invest_actual = min(invest_target, pf["capital"])
+        if invest_actual <= 0:
+            # 자금 부족 → 매수 불가
+            action = "hold"
+        else:
+            commission = invest_actual * COMMISSION_RATE
+            pf["invested_amount"] = round(invest_actual - commission)
+            pf["capital"] -= round(invest_actual)
+            pf["entry_price"] = current_price
+            pf["entry_date"] = date
+            pf["hold_days"] = 0
+            pf["sizing_ratio"] = sizing
+            pf["position"] = etf_signal.get("direction", "long")
+            pf["etf_name"] = etf_signal.get("etf_name")
+            pf["etf_multiplier"] = etf_signal.get("multiplier", 1.0)
 
-        # 월간 거래 카운트
-        etf_type = _classify_etf_type(pf["etf_name"])
-        pf["monthly_etf_trades"][etf_type] = pf["monthly_etf_trades"].get(etf_type, 0) + 1
+            # 월간 거래 카운트
+            etf_type = _classify_etf_type(pf["etf_name"])
+            pf["monthly_etf_trades"][etf_type] = pf["monthly_etf_trades"].get(etf_type, 0) + 1
 
-    elif action == "sell" and pf["position"] != "cash":
+    if action == "sell" and pf["position"] != "cash":
         if pf["entry_price"] and current_price:
             multiplier = pf.get("etf_multiplier", 1.0)
             kospi_change = (current_price / pf["entry_price"] - 1)
             pnl_pct = kospi_change * multiplier
             pnl = pf["invested_amount"] * pnl_pct
             commission = abs(pf["invested_amount"] + pnl) * COMMISSION_RATE
-            pf["capital"] += round(pf["invested_amount"] + pnl - commission)
+            returned = round(pf["invested_amount"] + pnl - commission)
+            # capital이 음수가 되지 않도록 보호
+            pf["capital"] = max(pf["capital"] + returned, 0)
 
             if pnl > 0:
                 pf["wins"] += 1
@@ -183,28 +208,27 @@ def execute_etf_trade(date, signal_valid, etf_signal, current_price=None):
 
         # 반대 방향 매수 즉시 진입
         if exit_reason == "방향 전환" and signal_valid and etf_signal.get("etf_name") != "현금":
+            total_value = _get_total_value(pf, current_price)
             sizing = etf_signal.get("sizing_ratio", 0.6)
-            invested = pf["capital"] * sizing
-            commission_buy = invested * COMMISSION_RATE
-            pf["invested_amount"] = round(invested - commission_buy)
-            pf["capital"] -= round(invested)
-            pf["entry_price"] = current_price
-            pf["entry_date"] = date
-            pf["hold_days"] = 0
-            pf["sizing_ratio"] = sizing
-            pf["position"] = etf_signal.get("direction", "long")
-            pf["etf_name"] = etf_signal.get("etf_name")
-            pf["etf_multiplier"] = etf_signal.get("multiplier", 1.0)
+            invest_target = total_value * sizing
+            invest_actual = min(invest_target, pf["capital"])
+            if invest_actual > 0:
+                commission_buy = invest_actual * COMMISSION_RATE
+                pf["invested_amount"] = round(invest_actual - commission_buy)
+                pf["capital"] -= round(invest_actual)
+                pf["entry_price"] = current_price
+                pf["entry_date"] = date
+                pf["hold_days"] = 0
+                pf["sizing_ratio"] = sizing
+                pf["position"] = etf_signal.get("direction", "long")
+                pf["etf_name"] = etf_signal.get("etf_name")
+                pf["etf_multiplier"] = etf_signal.get("multiplier", 1.0)
 
-            etf_type = _classify_etf_type(pf["etf_name"])
-            pf["monthly_etf_trades"][etf_type] = pf["monthly_etf_trades"].get(etf_type, 0) + 1
+                etf_type = _classify_etf_type(pf["etf_name"])
+                pf["monthly_etf_trades"][etf_type] = pf["monthly_etf_trades"].get(etf_type, 0) + 1
 
     # MDD 추적
-    total_value = pf["capital"]
-    if pf["position"] != "cash" and pf["invested_amount"] > 0 and pf["entry_price"]:
-        multiplier = pf.get("etf_multiplier", 1.0)
-        kospi_change = (current_price / pf["entry_price"] - 1)
-        total_value += pf["invested_amount"] * (1 + kospi_change * multiplier)
+    total_value = _get_total_value(pf, current_price)
     if total_value > pf.get("peak_capital", INITIAL_CAPITAL):
         pf["peak_capital"] = total_value
     dd = (total_value / pf["peak_capital"] - 1) * 100
@@ -278,9 +302,9 @@ def _get_latest_kospi_close():
 
 def get_portfolio_summary():
     pf = _load_portfolio()
-    total_value = pf["capital"]
-    if pf["position"] != "cash" and pf["invested_amount"] > 0:
-        total_value += pf["invested_amount"]
+    # 총자산 = capital + 미실현 평가금 (정확한 계산)
+    current_price = _get_latest_kospi_close()
+    total_value = _get_total_value(pf, current_price)
     initial = pf["initial_capital"]
     total_return = (total_value / initial - 1) * 100
     wins = pf["wins"]
