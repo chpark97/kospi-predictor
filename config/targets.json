@@ -1,0 +1,25 @@
+{
+  "targets": [
+    {
+      "name": "kospi",
+      "label": "코스피",
+      "ticker": "^KS11",
+      "table": "kospi_index",
+      "enabled": true
+    },
+    {
+      "name": "samsung",
+      "label": "삼성전자",
+      "ticker": "005930.KS",
+      "table": "korea_samsung",
+      "enabled": true
+    },
+    {
+      "name": "kosdaq",
+      "label": "코스닥",
+      "ticker": "^KQ11",
+      "table": "korea_kosdaq",
+      "enabled": true
+    }
+  ]
+}

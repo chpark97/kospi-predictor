@@ -166,12 +166,13 @@ def run_prediction():
 
     # 1. 데이터 업데이트
     logger.info("데이터 업데이트 중...")
-    from collectors import YahooCollector, KRXCollector, FREDCollector, InvestorCollector, NewsCollector
+    from collectors import YahooCollector, KRXCollector, FREDCollector, InvestorCollector, NewsCollector, KoreaSpecificCollector
     YahooCollector().collect()
     KRXCollector().collect()
     FREDCollector().collect()
     InvestorCollector().collect()
     NewsCollector().collect(days_back=3)
+    KoreaSpecificCollector().collect()
 
     # 2. 피처 생성
     fe = FeatureEngineer()
@@ -190,6 +191,18 @@ def run_prediction():
     regime, _ = detect_regime()
     regime_label = REGIME_LABELS[regime]
     confidence_threshold = get_regime_threshold(regime)
+
+    # 4a. 이벤트 감지
+    from collectors.event_calendar import get_nearest_event
+    nearest_event = get_nearest_event(today)
+    event_str = ""
+    if nearest_event and nearest_event["days_until"] <= 3:
+        event_str = f"{nearest_event['name']} ({nearest_event['date']})"
+        if nearest_event["days_until"] == 0:
+            confidence_threshold += 10  # 이벤트 당일 임계값 상향
+            logger.info(f"  이벤트 당일: {event_str} → 임계값 +10%")
+        else:
+            logger.info(f"  이벤트 {nearest_event['days_until']}일 후: {event_str}")
 
     # 5. 예측
     X, _, dates, _ = fe.prepare_sequences(df, scaler=scaler, fit_scaler=False)
@@ -325,6 +338,7 @@ def run_prediction():
         "mc_emoji": mc_emoji,
         "portfolio": format_portfolio_summary(),
         "meta_proba": round(float(meta_proba), 3) if meta_proba is not None else None,
+        "event": event_str,
     }
 
     _save_today_prediction(result, individual_dirs)

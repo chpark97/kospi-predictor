@@ -38,6 +38,8 @@ class FeatureEngineer:
         df = self._add_calendar_features(df)
         df = self._add_investor_features(df)
         df = self._add_sentiment_features(df)
+        df = self._add_korea_specific_features(df)
+        df = self._add_event_features(df)
         df = self._add_derived_features(df)
         df = df.dropna().reset_index(drop=True)
 
@@ -129,6 +131,14 @@ class FeatureEngineer:
         except Exception as e:
             logger.info(f"news_sentiment 없음 (선택적): {e}")
             merged["sentiment_score"] = 0.0
+
+        # 한국 특화: 삼성전자, SOX, 코스닥 (선택적)
+        for name in ["samsung", "sox", "kosdaq"]:
+            try:
+                kdf = pd.read_sql(f"SELECT date, close as {name} FROM korea_{name}", conn)
+                merged = merged.merge(kdf, on="date", how="left")
+            except Exception:
+                merged[name] = np.nan
 
         conn.close()
 
@@ -350,6 +360,42 @@ class FeatureEngineer:
             labels=[-2, -1, 0, 1, 2]
         ).astype(float)
 
+        return df
+
+    # ── 한국 특화 피처 ──
+
+    def _add_korea_specific_features(self, df):
+        close = df["kospi_close"]
+
+        # 삼성전자 수익률 + 상대강도 (shift 적용)
+        if "samsung" in df.columns and df["samsung"].notna().sum() > 20:
+            df["samsung_ret1d"] = df["samsung"].pct_change(1).shift(1) * 100
+            df["samsung_ret5d"] = df["samsung"].pct_change(5).shift(1) * 100
+            # 삼성전자 vs 코스피 상대강도 (RS)
+            sam_ret = df["samsung"].pct_change(20)
+            kos_ret = close.pct_change(20)
+            df["samsung_relative_strength"] = ((1 + sam_ret) / (1 + kos_ret) - 1).shift(1) * 100
+
+        # SOX 반도체 수익률 + 모멘텀
+        if "sox" in df.columns and df["sox"].notna().sum() > 20:
+            df["sox_ret1d"] = df["sox"].pct_change(1).shift(1) * 100
+            df["sox_momentum_5d"] = df["sox"].pct_change(5).shift(1) * 100
+
+        # 코스닥 수익률 + 코스피/코스닥 비율
+        if "kosdaq" in df.columns and df["kosdaq"].notna().sum() > 20:
+            df["kosdaq_ret1d"] = df["kosdaq"].pct_change(1).shift(1) * 100
+            df["kospi_kosdaq_ratio"] = (close / df["kosdaq"]).shift(1)
+
+        return df
+
+    # ── 이벤트 피처 ──
+
+    def _add_event_features(self, df):
+        try:
+            from collectors.event_calendar import add_event_features
+            df = add_event_features(df)
+        except Exception as e:
+            logger.warning(f"이벤트 피처 추가 실패: {e}")
         return df
 
     # ── 파생 피처 ──

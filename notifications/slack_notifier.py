@@ -84,8 +84,13 @@ def send_prediction_alert(result: dict):
         reasons = "\n🔍 *주요 근거:*\n" + "\n".join(lines)
 
     # 메시지 조립
+    event = result.get("event", "")
+
     text = f"📊 *[{date}] 코스피 예측*\n\n"
     text += f"🌍 시장 레짐: {regime_label}\n"
+
+    if event:
+        text += f"📅 이벤트: {event}\n"
 
     if ms_str:
         text += f"📅 단기 전망: {ms_str}\n"

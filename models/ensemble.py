@@ -15,6 +15,7 @@ from models.lstm_attention import LSTMAttention
 from models.cnn_model import CNN1D
 from models.transformer_model import TransformerPredictor
 from models.multiscale_model import MultiScaleLSTM
+from models.tft_model import TemporalFusionTransformer
 
 logger = logging.getLogger(__name__)
 
@@ -24,9 +25,10 @@ MODEL_REGISTRY = {
     "cnn": CNN1D,
     "transformer": TransformerPredictor,
     "multiscale": MultiScaleLSTM,
+    "tft": TemporalFusionTransformer,
 }
 
-# 앙상블 구성: (모델 타입, 시드) - 총 11개
+# 앙상블 구성: (모델 타입, 시드) - 총 13개
 ENSEMBLE_MEMBERS = [
     ("attention", 42),
     ("attention", 123),
@@ -39,13 +41,15 @@ ENSEMBLE_MEMBERS = [
     ("transformer", 123),
     ("multiscale", 42),
     ("multiscale", 123),
+    ("tft", 42),
+    ("tft", 123),
 ]
 
 
 def create_model(model_type, num_features, seq_length=20):
     """모델 타입에 따라 인스턴스 생성"""
     cls = MODEL_REGISTRY[model_type]
-    if model_type in ("cnn", "transformer", "multiscale"):
+    if model_type in ("cnn", "transformer", "multiscale", "tft"):
         return cls(num_features, seq_length=seq_length)
     return cls(num_features)
 
