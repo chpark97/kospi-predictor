@@ -136,25 +136,69 @@ def _save_today_prediction(result, individual_dirs):
 
 # ── 복합 신뢰도 ──
 
-def compute_composite_confidence(details, regime):
+def compute_composite_confidence(details, regime, prediction_history=None):
+    """개선된 복합 신뢰도 — 4개 지표의 가중 합산
+
+    기존 문제: agreement*0.4 + concentration*0.3 + accuracy*0.3 이 항상 ~50으로 수렴
+    개선: 합의도/강도/일관성/방향별정확도로 변별력 확보
+    """
     all_returns = details["individual_returns"]
-    agreement = details["agreement"][0]
-
-    agreement_score = agreement * 100
-
     individual_rets = all_returns[:, 0]
+
+    # 1. 모델 합의도 (0~100)
+    # 극단적 합의(>80% 또는 <20%)일 때 높은 점수
+    up_vote_ratio = details["up_vote_ratio"][0]
+    agreement_score = abs(up_vote_ratio - 0.5) * 200  # 0~100
+
+    # 2. 예측 강도 (0~100)
+    # 개별 모델 예측치의 절대값 평균이 클수록 확신
     mean_abs = np.mean(np.abs(individual_rets))
-    spread = np.std(individual_rets)
-    concentration = min(mean_abs / max(spread, 0.01), 5.0) / 5.0 * 100 if mean_abs > 0 else 0
+    strength_score = min(mean_abs / 0.5 * 100, 100)
 
-    recent_acc, n_days = get_recent_accuracy(30)
-    accuracy_score = recent_acc if (recent_acc is not None and n_days >= 5) else 50.0
+    # 3. 모델 간 일관성 (0~100)
+    # 다수결 방향과 같은 모델들의 예측치 표준편차가 작을수록 높은 점수
+    majority_up = up_vote_ratio > 0.5
+    same_dir = individual_rets[individual_rets > 0] if majority_up else individual_rets[individual_rets <= 0]
+    if len(same_dir) > 1:
+        consistency_score = max(0, 100 - np.std(same_dir) * 200)
+    else:
+        consistency_score = 50
 
-    composite = agreement_score * 0.40 + concentration * 0.30 + accuracy_score * 0.30
+    # 4. 최근 방향별 정확도 (0~100)
+    # 현재 예측 방향(상승/하락)에서의 최근 20일 정확도
+    predicted_up = np.mean(individual_rets) > 0
+    accuracy_score = 50.0  # 기본값
+
+    if prediction_history:
+        recent_verified = [h for h in prediction_history[-20:] if h.get("actual_direction")]
+        if recent_verified:
+            same_pred = [
+                h for h in recent_verified
+                if (h["predicted_direction"] == "up") == predicted_up
+            ]
+            if same_pred:
+                dir_acc = sum(
+                    1 for h in same_pred
+                    if h["predicted_direction"] == h["actual_direction"]
+                ) / len(same_pred)
+                accuracy_score = dir_acc * 100
+    else:
+        # prediction_history가 없으면 기존 방식 fallback
+        recent_acc, n_days = get_recent_accuracy(30)
+        if recent_acc is not None and n_days >= 5:
+            accuracy_score = recent_acc
+
+    composite = (
+        agreement_score * 0.30
+        + strength_score * 0.15
+        + consistency_score * 0.25
+        + accuracy_score * 0.30
+    )
 
     logger.info(
         f"  복합신뢰도: {composite:.1f}% "
-        f"(합의={agreement_score:.0f}%×0.4 + 집중={concentration:.0f}%×0.3 + 실적={accuracy_score:.0f}%×0.3)"
+        f"(합의={agreement_score:.0f}×0.3 + 강도={strength_score:.0f}×0.15 "
+        f"+ 일관={consistency_score:.0f}×0.25 + 정확={accuracy_score:.0f}×0.3)"
     )
     return composite
 
@@ -164,16 +208,31 @@ def compute_composite_confidence(details, regime):
 def run_prediction():
     today = datetime.now().strftime("%Y-%m-%d")
 
-    # 1. 데이터 업데이트
+    # 1. 데이터 업데이트 (수집 실패해도 기존 데이터로 예측 진행)
     logger.info("데이터 업데이트 중...")
     from collectors import YahooCollector, KRXCollector, FREDCollector, InvestorCollector, NewsCollector, KoreaSpecificCollector, ECOSCollector
-    YahooCollector().collect()
-    KRXCollector().collect()
-    FREDCollector().collect()
-    InvestorCollector().collect()
-    NewsCollector().collect(days_back=3)
-    KoreaSpecificCollector().collect()
-    ECOSCollector().collect()
+
+    collectors = [
+        ("Yahoo", YahooCollector),
+        ("KRX", KRXCollector),
+        ("FRED", FREDCollector),
+        ("Investor", InvestorCollector),
+        ("News", lambda: NewsCollector().collect(days_back=3)),
+        ("Korea", KoreaSpecificCollector),
+        ("ECOS", ECOSCollector),
+    ]
+    failed = []
+    for name, cls in collectors:
+        try:
+            if callable(cls) and not isinstance(cls, type):
+                cls()
+            else:
+                cls().collect()
+        except Exception as e:
+            logger.error(f"[{name}] 수집 실패: {e}")
+            failed.append(name)
+    if failed:
+        logger.warning(f"수집 실패: {failed} — 기존 데이터로 예측 진행")
 
     # 2. 피처 생성
     fe = FeatureEngineer()
@@ -266,19 +325,9 @@ def run_prediction():
     top_features = get_top_features(ensemble, X[-1:], fe.feature_names, top_k=5)
     shap_str = format_shap_results(top_features)
 
-    # 6. 복합 신뢰도
-    confidence = compute_composite_confidence(details, regime)
-
-    if ms_all_same:
-        confidence = min(confidence + 10.0, 100.0)
-        logger.info(f"  멀티스텝 보너스: +10% → {confidence:.1f}%")
-
-    # MC Dropout 고불확실성이면 신뢰도 감소
-    if mc_level == "high":
-        confidence *= 0.85
-        logger.info(f"  MC Dropout 고불확실성: 신뢰도 -15% → {confidence:.1f}%")
-
-    # 7. 리스크 필터
+    # 6. 리스크 필터 (신뢰도 계산 전에 먼저 적용)
+    # 기존 순서: 신뢰도 → 멀티스텝 보너스 → MC Dropout → 리스크 필터
+    # 변경 순서: 리스크 필터 → 신뢰도 계산 → MC Dropout → 임계값 비교
     vix_value, _ = get_latest_vix()
     prev_return = get_previous_kospi_return()
     sentiment = get_latest_sentiment()
@@ -288,6 +337,7 @@ def run_prediction():
 
     risk_warnings = []
     signal_valid = True
+    risk_confidence_penalty = 1.0  # 리스크에 의한 신뢰도 감쇄 계수
 
     # 지정학적 리스크 강제 중단
     if geo_forced_stop:
@@ -300,12 +350,25 @@ def run_prediction():
 
     if abs(prev_return) >= LARGE_MOVE_THRESHOLD:
         risk_warnings.append(f"⚠ 전일 대폭 변동 ({prev_return:+.2f}%)")
-        confidence *= 0.8
+        risk_confidence_penalty *= 0.8
 
     if sentiment is not None and abs(sentiment) >= 0.3:
         if (pred_return > 0 and sentiment < -0.3) or (pred_return < 0 and sentiment > 0.3):
             risk_warnings.append(f"⚠ 감성 역행")
-            confidence *= 0.85
+            risk_confidence_penalty *= 0.85
+
+    # 7. 복합 신뢰도 (리스크 감쇄 후 계산)
+    confidence = compute_composite_confidence(details, regime, history)
+    confidence *= risk_confidence_penalty
+    if risk_confidence_penalty < 1.0:
+        logger.info(f"  리스크 감쇄: ×{risk_confidence_penalty:.2f} → {confidence:.1f}%")
+
+    # 멀티스텝 결과는 슬랙 메시지에만 표시, 신뢰도 보너스 없음
+
+    # MC Dropout 고불확실성이면 신뢰도 감소
+    if mc_level == "high":
+        confidence *= 0.85
+        logger.info(f"  MC Dropout 고불확실성: 신뢰도 -15% → {confidence:.1f}%")
 
     if confidence < confidence_threshold:
         risk_warnings.append(f"⚠ 신뢰도 부족 ({confidence:.1f}%<{confidence_threshold:.0f}%)")

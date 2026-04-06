@@ -1,7 +1,7 @@
 """앙상블 모델 - 다수의 모델 예측을 결합
 
 앙상블 전략:
-1. 아키텍처 다양성: LSTM, LSTM+Attention, 1D-CNN, Transformer
+1. 아키텍처 다양성: LSTM, LSTM+Attention, 1D-CNN, Transformer, TFT
 2. 시드 다양성: 동일 아키텍처를 다른 시드로 학습
 3. 가중 투표: validation 성능 기반 가중치 부여
 """
@@ -28,7 +28,9 @@ MODEL_REGISTRY = {
     "tft": TemporalFusionTransformer,
 }
 
-# 앙상블 구성: (모델 타입, 시드) - 총 13개
+# 앙상블 구성: (모델 타입, 시드) - 총 11개
+# multiscale 모델 제거: dynamic_weights.json에서 항상 correct=false, 가중치 0.1
+# → 20일 시퀀스에서 서브샘플링이 의미 없고 학습 실패 패턴 반복
 ENSEMBLE_MEMBERS = [
     ("attention", 42),
     ("attention", 123),
@@ -39,8 +41,6 @@ ENSEMBLE_MEMBERS = [
     ("cnn", 123),
     ("transformer", 42),
     ("transformer", 123),
-    ("multiscale", 42),
-    ("multiscale", 123),
     ("tft", 42),
     ("tft", 123),
 ]

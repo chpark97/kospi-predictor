@@ -12,10 +12,17 @@ logger = logging.getLogger(__name__)
 
 
 def _enable_dropout(model):
-    """모델의 Dropout 레이어만 train 모드로 전환"""
+    """모델의 Dropout 레이어만 train 모드로 전환, BatchNorm은 명시적 eval 유지
+
+    CNN 모델에 BatchNorm1d가 있으므로, Dropout만 train으로 바꾸고
+    BatchNorm은 eval 유지하여 running statistics 사용.
+    이렇게 하지 않으면 MC Dropout의 확률적 변동과 BatchNorm이 충돌.
+    """
     for m in model.modules():
         if isinstance(m, torch.nn.Dropout):
             m.train()
+        elif isinstance(m, (torch.nn.BatchNorm1d, torch.nn.BatchNorm2d, torch.nn.BatchNorm3d)):
+            m.eval()
 
 
 def mc_dropout_predict(ensemble, X, n_samples=50):
@@ -38,7 +45,7 @@ def mc_dropout_predict(ensemble, X, n_samples=50):
     for _ in range(n_samples):
         sample_preds = []
         for model, weight, _ in ensemble.models:
-            # Dropout만 train 모드로
+            # Dropout만 train 모드로 (BatchNorm은 eval 유지)
             _enable_dropout(model)
 
             with torch.no_grad():
