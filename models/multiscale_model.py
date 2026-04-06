@@ -45,6 +45,14 @@ class MultiScaleLSTM(nn.Module):
             nn.Sigmoid(),
         )
 
+        self.fc_direction = nn.Sequential(
+            nn.Linear(concat_size, 64),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+            nn.Linear(64, 1),
+            nn.Sigmoid(),
+        )
+
     def forward(self, x):
         # x: (batch, seq_len, features)
         batch_size = x.size(0)
@@ -73,5 +81,6 @@ class MultiScaleLSTM(nn.Module):
 
         pred_return = self.fc_return(combined).squeeze(-1)
         confidence = self.fc_confidence(combined).squeeze(-1)
+        pred_direction = self.fc_direction(combined).squeeze(-1)
 
-        return pred_return, confidence
+        return pred_return, confidence, pred_direction

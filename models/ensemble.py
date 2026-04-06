@@ -29,6 +29,7 @@ MODEL_REGISTRY = {
 }
 
 # 앙상블 구성: (모델 타입, 시드) - 총 13개
+# multiscale 제거 → tft, cnn 시드 추가로 다양성 유지
 ENSEMBLE_MEMBERS = [
     ("attention", 42),
     ("attention", 123),
@@ -37,12 +38,12 @@ ENSEMBLE_MEMBERS = [
     ("baseline", 123),
     ("cnn", 42),
     ("cnn", 123),
+    ("cnn", 777),
     ("transformer", 42),
     ("transformer", 123),
-    ("multiscale", 42),
-    ("multiscale", 123),
     ("tft", 42),
     ("tft", 123),
+    ("tft", 777),
 ]
 
 
@@ -74,45 +75,56 @@ class EnsemblePredictor:
 
         all_returns = []
         all_confs = []
+        all_directions = []
         weights = []
+        has_direction_head = False
 
         with torch.no_grad():
             for model, weight, model_type in self.models:
-                pred_ret, pred_conf = model(X_tensor)
+                outputs = model(X_tensor)
+                # 하위 호환: 옛 모델은 2개, 새 모델은 3개 반환
+                if len(outputs) == 3:
+                    pred_ret, pred_conf, pred_dir = outputs
+                    all_directions.append(pred_dir.numpy())
+                    has_direction_head = True
+                else:
+                    pred_ret, pred_conf = outputs
+                    # direction head 없으면 return 부호로 대체
+                    all_directions.append((pred_ret > 0).float().numpy())
                 all_returns.append(pred_ret.numpy())
                 all_confs.append(pred_conf.numpy())
                 weights.append(weight)
 
         all_returns = np.array(all_returns)
         all_confs = np.array(all_confs)
+        all_directions = np.array(all_directions)
         weights = np.array(weights)
         weights = weights / weights.sum()
 
         pred_return = np.average(all_returns, axis=0, weights=weights)
 
-        directions = (all_returns > 0).astype(float)
-        up_vote_ratio = np.average(directions, axis=0, weights=weights)
+        # Direction head 기반 투표 (있으면 pred_direction, 없으면 return 부호)
+        if has_direction_head:
+            up_vote_ratio = np.average(all_directions, axis=0, weights=weights)
+        else:
+            directions = (all_returns > 0).astype(float)
+            up_vote_ratio = np.average(directions, axis=0, weights=weights)
         agreement = np.abs(up_vote_ratio - 0.5) * 2
 
-        # 투표-수익률 불일치 보정: 가중 투표 과반이 하락인데
-        # 가중 평균 수익률이 양수면 부호를 뒤집어 투표 방향에 맞춤
+        # 투표-수익률 불일치 보정
         for idx in range(pred_return.shape[0] if pred_return.ndim > 0 else 1):
             vote = up_vote_ratio[idx] if up_vote_ratio.ndim > 0 else up_vote_ratio
             ret = pred_return[idx] if pred_return.ndim > 0 else pred_return
             if vote < 0.5 and ret > 0:
-                # 하락 과반인데 수익률 양수 → 부호 반전
                 if pred_return.ndim > 0:
-                    pred_return[idx] = -abs(ret) * (1 - vote)  # 과반 비율로 축소
+                    pred_return[idx] = -abs(ret) * (1 - vote)
                 else:
                     pred_return = -abs(ret) * (1 - vote)
-                logger.debug(f"  [Ensemble] 투표-수익률 불일치 보정: vote={vote:.2f}, ret {ret:.4f} → {pred_return if pred_return.ndim == 0 else pred_return[idx]:.4f}")
             elif vote > 0.5 and ret < 0:
-                # 상승 과반인데 수익률 음수 → 부호 반전
                 if pred_return.ndim > 0:
                     pred_return[idx] = abs(ret) * vote
                 else:
                     pred_return = abs(ret) * vote
-                logger.debug(f"  [Ensemble] 투표-수익률 불일치 보정: vote={vote:.2f}, ret {ret:.4f} → {pred_return if pred_return.ndim == 0 else pred_return[idx]:.4f}")
 
         avg_conf = np.average(all_confs, axis=0, weights=weights)
         confidence = avg_conf * (0.5 + 0.5 * agreement)
@@ -120,6 +132,7 @@ class EnsemblePredictor:
         details = {
             "individual_returns": all_returns,
             "individual_confs": all_confs,
+            "individual_directions": all_directions,
             "up_vote_ratio": up_vote_ratio,
             "agreement": agreement,
             "weights": weights,

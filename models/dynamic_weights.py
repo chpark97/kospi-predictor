@@ -70,12 +70,24 @@ def update_weights(individual_predictions, actual_direction, member_names):
 
     # 각 모델별 최근 DA 계산 → 가중치
     weights = {}
+    recent_10 = history[-10:] if len(history) >= 10 else history
+
     for name in member_names:
         correct_list = [h["correct"].get(name, False) for h in history]
         if correct_list:
             da = sum(correct_list) / len(correct_list)
         else:
             da = 0.5
+
+        # 자동 비활성화: 최근 10일 DA가 20% 이하면 가중치 0
+        if len(recent_10) >= 10:
+            recent_correct = [h["correct"].get(name, False) for h in recent_10]
+            recent_da = sum(recent_correct) / len(recent_correct)
+            if recent_da <= 0.2:
+                weights[name] = 0.0
+                logger.warning(f"  ⚠ {name} 자동 비활성화: 최근 10일 DA={recent_da*100:.0f}%")
+                continue
+
         # 가중치: DA에 비례, 최소 0.1
         weights[name] = max(da, 0.1)
 
@@ -99,7 +111,17 @@ def get_dynamic_weights(member_names):
     for name in member_names:
         weights.append(data["weights"].get(name, 0.5))
 
-    return np.array(weights)
+    weights_arr = np.array(weights)
+
+    # 가중치 0인 모델이 과반이면 경고
+    n_disabled = np.sum(weights_arr == 0)
+    if n_disabled > len(weights_arr) / 2:
+        logger.warning(
+            f"[DynamicWeights] ⚠ 비활성화 모델 과반: {n_disabled}/{len(weights_arr)}개 → "
+            f"앙상블 신뢰도 저하 주의"
+        )
+
+    return weights_arr
 
 
 def get_recent_accuracy(n_days=30):

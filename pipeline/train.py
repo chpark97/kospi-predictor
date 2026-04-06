@@ -42,19 +42,26 @@ class DirectionalLoss(nn.Module):
             self.use_logits = False
         self.bce_conf = nn.BCELoss()
 
-    def forward(self, pred_return, confidence, y_true):
+    def forward(self, pred_return, confidence, y_true, pred_direction=None):
         loss_mse = self.mse(pred_return, y_true)
 
         true_dir = (y_true > 0).float()
-        if self.use_logits:
+
+        # Direction head가 있으면 직접 사용, 없으면 pred_return 기반
+        if pred_direction is not None:
+            loss_dir = self.bce_conf(pred_direction, true_dir)  # BCE(sigmoid output)
+        elif self.use_logits:
             loss_dir = self.bce_dir(pred_return * 3, true_dir)
         else:
             pred_prob = torch.sigmoid(pred_return * 3)
             loss_dir = self.bce_dir(pred_prob, true_dir)
 
         with torch.no_grad():
-            pred_dir = (pred_return > 0).float()
-            correct = (true_dir == pred_dir).float()
+            if pred_direction is not None:
+                pred_dir_binary = (pred_direction > 0.5).float()
+            else:
+                pred_dir_binary = (pred_return > 0).float()
+            correct = (true_dir == pred_dir_binary).float()
         loss_conf = self.bce_conf(confidence, correct)
 
         return loss_mse + self.dw * loss_dir + self.cw * loss_conf
@@ -124,15 +131,23 @@ def train_single_model(model, train_loader, val_loader, epochs=None, lr=None,
 
         for X_batch, y_batch in train_loader:
             optimizer.zero_grad()
-            pred_return, confidence = model(X_batch)
-            loss = criterion(pred_return, confidence, y_batch)
+            outputs = model(X_batch)
+            if len(outputs) == 3:
+                pred_return, confidence, pred_direction = outputs
+                loss = criterion(pred_return, confidence, y_batch, pred_direction)
+            else:
+                pred_return, confidence = outputs
+                loss = criterion(pred_return, confidence, y_batch)
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
             optimizer.step()
             train_losses.append(loss.item())
 
             with torch.no_grad():
-                da = ((pred_return > 0) == (y_batch > 0)).float().mean().item()
+                if len(outputs) == 3:
+                    da = ((pred_direction > 0.5) == (y_batch > 0)).float().mean().item()
+                else:
+                    da = ((pred_return > 0) == (y_batch > 0)).float().mean().item()
                 train_dir_acc.append(da)
 
         scheduler.step(epoch)
@@ -142,9 +157,13 @@ def train_single_model(model, train_loader, val_loader, epochs=None, lr=None,
 
         with torch.no_grad():
             for X_batch, y_batch in val_loader:
-                pred_return, _ = model(X_batch)
+                outputs = model(X_batch)
+                pred_return = outputs[0]
                 val_mse_list.append(mse_loss(pred_return, y_batch).item())
-                da = ((pred_return > 0) == (y_batch > 0)).float().mean().item()
+                if len(outputs) == 3:
+                    da = ((outputs[2] > 0.5) == (y_batch > 0)).float().mean().item()
+                else:
+                    da = ((pred_return > 0) == (y_batch > 0)).float().mean().item()
                 val_da_list.append(da)
 
         val_loss = np.mean(val_mse_list)
@@ -205,6 +224,7 @@ def walk_forward_ensemble():
 
     SAVE_DIR.mkdir(parents=True, exist_ok=True)
     all_results = []
+    selected_feature_mask = None  # 첫 split에서 결정, 이후 재사용
 
     # Rolling window 또는 고정 split 선택
     if USE_ROLLING_WALK_FORWARD:
@@ -278,6 +298,47 @@ def walk_forward_ensemble():
             weight = max(val_da - 45, 1.0) * recency_factor
             ensemble.add_model(model, weight, model_type)
 
+        # ── 피처 선택 (첫 split 학습 후 수행) ──
+        if i == 0 and selected_feature_mask is None:
+            from pipeline.feature_selection import rank_features_by_importance
+            ranked = rank_features_by_importance(ensemble, X_val, fe.feature_names, n_samples=min(50, len(X_val)))
+            n_total = len(ranked)
+            n_remove = max(int(n_total * 0.2), 1)
+            n_keep = n_total - n_remove
+            keep_names = set(name for name, _ in ranked[:n_keep])
+            selected_feature_mask = np.array([n in keep_names for n in fe.feature_names])
+            logger.info(f"피처 선택: {n_total} → {n_keep}개 (하위 {n_remove}개 제거)")
+
+            # 현재 split 데이터에 마스크 적용
+            X_tr = X_tr[:, :, selected_feature_mask]
+            X_val = X_val[:, :, selected_feature_mask]
+            X_test = X_test[:, :, selected_feature_mask]
+            num_features = X_tr.shape[2]
+
+            # 앙상블 재학습 (선택된 피처로)
+            ensemble = EnsemblePredictor()
+            for j2, (model_type, seed) in enumerate(ENSEMBLE_MEMBERS):
+                torch.manual_seed(seed)
+                np.random.seed(seed)
+                model = create_model(model_type, num_features, seq_length)
+                train_ds = TensorDataset(torch.FloatTensor(X_tr), torch.FloatTensor(y_tr))
+                val_ds = TensorDataset(torch.FloatTensor(X_val), torch.FloatTensor(y_val))
+                hp_lr = best_params.get("learning_rate", LEARNING_RATE)
+                hp_bs = best_params.get("batch_size", BATCH_SIZE)
+                tl = DataLoader(train_ds, batch_size=hp_bs, shuffle=True, drop_last=True)
+                vl = DataLoader(val_ds, batch_size=hp_bs)
+                model, vl2, vd2 = train_single_model(model, tl, vl, lr=hp_lr)
+                recency_factor = 1.0 + 0.5 * i
+                weight = max(vd2 - 45, 1.0) * recency_factor
+                ensemble.add_model(model, weight, model_type)
+
+        elif selected_feature_mask is not None:
+            # 이후 split에도 동일 마스크 적용
+            X_tr = X_tr[:, :, selected_feature_mask]
+            X_val = X_val[:, :, selected_feature_mask]
+            X_test = X_test[:, :, selected_feature_mask]
+            num_features = X_tr.shape[2]
+
         # ── 앙상블 테스트 ──
         pred_returns, pred_confs, details = ensemble.predict(X_test)
 
@@ -304,7 +365,7 @@ def walk_forward_ensemble():
                 "model_type": model_type,
             })
 
-        torch.save({
+        save_data = {
             "members": member_states,
             "scaler_mean": scaler.mean_,
             "scaler_scale": scaler.scale_,
@@ -313,7 +374,10 @@ def walk_forward_ensemble():
             "seq_length": seq_length,
             "split": split,
             "metrics": metrics,
-        }, save_path)
+        }
+        if selected_feature_mask is not None:
+            save_data["selected_feature_indices"] = np.where(selected_feature_mask)[0].tolist()
+        torch.save(save_data, save_path)
         logger.info(f"  앙상블 저장: {save_path}")
 
     # ── 전체 결과 요약 ──
@@ -339,6 +403,12 @@ def walk_forward_ensemble():
     # ── 최종 앙상블: 전체 데이터로 재학습 ──
     logger.info(f"\n최종 앙상블 학습 (전체 데이터)...")
     X_all, y_all, _, scaler = fe.prepare_sequences(df, fit_scaler=True)
+
+    # 피처 선택 마스크 적용
+    if selected_feature_mask is not None:
+        X_all = X_all[:, :, selected_feature_mask]
+        logger.info(f"최종 학습에 피처 마스크 적용: {sum(selected_feature_mask)}개 피처")
+
     val_size = max(int(len(X_all) * 0.1), 1)
     X_tr, y_tr = X_all[:-val_size], y_all[:-val_size]
     X_val, y_val = X_all[-val_size:], y_all[-val_size:]
@@ -375,14 +445,17 @@ def walk_forward_ensemble():
         })
 
     final_path = SAVE_DIR / "ensemble_final.pt"
-    torch.save({
+    final_save = {
         "members": member_states,
         "scaler_mean": scaler.mean_,
         "scaler_scale": scaler.scale_,
         "feature_names": fe.feature_names,
         "num_features": num_features,
         "seq_length": seq_length,
-    }, final_path)
+    }
+    if selected_feature_mask is not None:
+        final_save["selected_feature_indices"] = np.where(selected_feature_mask)[0].tolist()
+    torch.save(final_save, final_path)
     logger.info(f"최종 앙상블 저장: {final_path}")
 
     return all_results
@@ -421,8 +494,9 @@ def walk_forward_train(model_type="ensemble"):
 
         model.eval()
         with torch.no_grad():
-            pred_returns, pred_confs = model(torch.FloatTensor(X_test))
-            pred_returns, pred_confs = pred_returns.numpy(), pred_confs.numpy()
+            outputs = model(torch.FloatTensor(X_test))
+            pred_returns = outputs[0].numpy()
+            pred_confs = outputs[1].numpy()
 
         metrics = evaluate_predictions(y_test, pred_returns, pred_confs, dates_test)
         metrics["split"] = test_start[:4]

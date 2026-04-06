@@ -77,6 +77,14 @@ class TemporalFusionTransformer(nn.Module):
             nn.Sigmoid(),
         )
 
+        self.fc_direction = nn.Sequential(
+            nn.Linear(d_model, 32),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+            nn.Linear(32, 1),
+            nn.Sigmoid(),
+        )
+
     def forward(self, x):
         # (batch, seq, features) → GRN → (batch, seq, d_model)
         h = self.input_grn(x)
@@ -93,5 +101,6 @@ class TemporalFusionTransformer(nn.Module):
 
         pred_return = self.fc_return(last).squeeze(-1)
         confidence = self.fc_confidence(last).squeeze(-1)
+        pred_direction = self.fc_direction(last).squeeze(-1)
 
-        return pred_return, confidence
+        return pred_return, confidence, pred_direction

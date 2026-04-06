@@ -53,6 +53,14 @@ class CNN1D(nn.Module):
             nn.Sigmoid(),
         )
 
+        self.fc_direction = nn.Sequential(
+            nn.Linear(64, 32),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+            nn.Linear(32, 1),
+            nn.Sigmoid(),
+        )
+
     def forward(self, x):
         # x: (batch, seq_len, features) -> (batch, features, seq_len) for Conv1d
         x = x.transpose(1, 2)
@@ -61,5 +69,6 @@ class CNN1D(nn.Module):
 
         pred_return = self.fc_return(x).squeeze(-1)
         confidence = self.fc_confidence(x).squeeze(-1)
+        pred_direction = self.fc_direction(x).squeeze(-1)
 
-        return pred_return, confidence
+        return pred_return, confidence, pred_direction

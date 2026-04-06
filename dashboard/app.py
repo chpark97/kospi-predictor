@@ -94,6 +94,10 @@ def get_portfolio():
         "wins": pf["wins"],
         "losses": pf["losses"],
         "win_rate": round(pf["wins"] / total_trades * 100, 1) if total_trades > 0 else 0,
+        "unrealized_pnl": pf.get("unrealized_pnl", 0),
+        "unrealized_pct": pf.get("unrealized_pct", 0.0),
+        "etf_name": pf.get("etf_name"),
+        "mdd": pf.get("max_drawdown", 0),
     }
 
 

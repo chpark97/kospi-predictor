@@ -212,10 +212,7 @@ class FeatureEngineer:
         obv = (np.sign(close.diff()) * volume).fillna(0).cumsum()
         df["obv_change"] = obv.pct_change(5)
 
-        # 캔들스틱 패턴 피처
-        df["candle_body"] = (close - df["kospi_open"]) / df["kospi_open"] * 100
-        df["upper_shadow"] = (high - pd.concat([close, df["kospi_open"]], axis=1).max(axis=1)) / close * 100
-        df["lower_shadow"] = (pd.concat([close, df["kospi_open"]], axis=1).min(axis=1) - low) / close * 100
+        # 캔들스틱 패턴 피처는 _add_derived_features()에서 shift(1) 적용하여 생성
 
         return df
 
@@ -437,22 +434,22 @@ class FeatureEngineer:
         df["ma5_above_ma20"] = (ma5 > ma20).astype(float)
         df["ma20_above_ma60"] = (ma20 > ma60).astype(float)
 
-        # 수익률 (1, 2, 3, 5, 10, 20일)
-        for period in [1, 2, 3, 5, 10, 20]:
-            df[f"return_{period}d"] = close.pct_change(period) * 100
+        # 수익률 — return_1d/2d/3d 제거 (타겟과 1~3일 차이 → 누수)
+        # return_5d/10d/20d만 유지하되 shift(1) 적용 (전일 기준)
+        for period in [5, 10, 20]:
+            df[f"return_{period}d"] = (close.pct_change(period) * 100).shift(1)
 
-        # 연속 상승/하락 카운트
+        # 연속 상승/하락 카운트 — shift(1) 적용 (당일 종가 방향 누수 방지)
         daily_ret = close.pct_change()
         up = (daily_ret > 0).astype(int)
         down = (daily_ret < 0).astype(int)
-        # 연속 상승일수
-        df["consec_up"] = up * (up.groupby((up != up.shift()).cumsum()).cumcount() + 1)
-        df["consec_down"] = down * (down.groupby((down != down.shift()).cumsum()).cumcount() + 1)
+        df["consec_up"] = (up * (up.groupby((up != up.shift()).cumsum()).cumcount() + 1)).shift(1)
+        df["consec_down"] = (down * (down.groupby((down != down.shift()).cumsum()).cumcount() + 1)).shift(1)
 
-        # 거래량 피처
-        df["volume_change"] = df["kospi_volume"].pct_change()
-        df["volume_ma5_ratio"] = df["kospi_volume"] / df["kospi_volume"].rolling(5).mean()
-        df["volume_ma20_ratio"] = df["kospi_volume"] / df["kospi_volume"].rolling(20).mean()
+        # 거래량 피처 — shift(1) 적용 (당일 거래량은 장중 데이터)
+        df["volume_change"] = df["kospi_volume"].pct_change().shift(1)
+        df["volume_ma5_ratio"] = (df["kospi_volume"] / df["kospi_volume"].rolling(5).mean()).shift(1)
+        df["volume_ma20_ratio"] = (df["kospi_volume"] / df["kospi_volume"].rolling(20).mean()).shift(1)
 
         # 변동성 (10, 20, 60일)
         daily_pct = close.pct_change()
@@ -462,8 +459,13 @@ class FeatureEngineer:
         # 변동성 비율 (단기/장기) - 변동성 레짐 전환 감지
         df["vol_ratio_10_60"] = df["volatility_10d"] / df["volatility_60d"]
 
-        # 고저 비율 (당일 변동 범위)
-        df["hl_ratio"] = (df["kospi_high"] - df["kospi_low"]) / close * 100
+        # 고저 비율 — shift(1) 적용 (당일 OHLC는 장중 데이터)
+        df["hl_ratio"] = ((df["kospi_high"] - df["kospi_low"]) / close * 100).shift(1)
+
+        # 캔들스틱 패턴 피처 — shift(1) 적용 (당일 OHLC는 장중)
+        df["candle_body"] = ((close - df["kospi_open"]) / df["kospi_open"] * 100).shift(1)
+        df["upper_shadow"] = ((df["kospi_high"] - pd.concat([close, df["kospi_open"]], axis=1).max(axis=1)) / close * 100).shift(1)
+        df["lower_shadow"] = ((pd.concat([close, df["kospi_open"]], axis=1).min(axis=1) - df["kospi_low"]) / close * 100).shift(1)
 
         # ── 멀티 타임프레임 피처 ──
         # 52주 고/저점 대비 위치

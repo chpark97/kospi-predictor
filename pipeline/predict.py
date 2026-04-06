@@ -49,6 +49,9 @@ def load_ensemble(model_path=None):
     scaler.var_ = scaler.scale_ ** 2
     scaler.n_features_in_ = num_features
 
+    # 피처 선택 인덱스 (학습 시 저장됨)
+    selected_feature_indices = checkpoint.get("selected_feature_indices")
+
     if "members" in checkpoint:
         ensemble = EnsemblePredictor()
         for member in checkpoint["members"]:
@@ -57,6 +60,9 @@ def load_ensemble(model_path=None):
             model.eval()
             ensemble.add_model(model, member["weight"], member["model_type"])
         logger.info(f"앙상블 로드: {len(checkpoint['members'])}개 모델")
+        if selected_feature_indices is not None:
+            ensemble.selected_feature_indices = selected_feature_indices
+            logger.info(f"  피처 선택 적용: {len(selected_feature_indices)}개 피처")
         return ensemble, scaler, checkpoint["feature_names"]
     else:
         from models.lstm_attention import LSTMAttention
@@ -221,7 +227,11 @@ def run_prediction():
 
     # 5. 예측
     X, _, dates, _ = fe.prepare_sequences(df, scaler=scaler, fit_scaler=False)
-    pred_return, _, details = ensemble.predict(X[-1:])
+    # 피처 선택 마스크 적용
+    X_pred = X[-1:]
+    if hasattr(ensemble, 'selected_feature_indices') and ensemble.selected_feature_indices is not None:
+        X_pred = X_pred[:, :, ensemble.selected_feature_indices]
+    pred_return, _, details = ensemble.predict(X_pred)
     pred_return = pred_return[0]
 
     # 5-1. 캘리브레이션 (상승 편향 제거)
@@ -233,7 +243,15 @@ def run_prediction():
     if cal_individual is not None:
         details["individual_returns"] = cal_individual
 
-    individual_dirs = details["individual_returns"][:, 0] > 0
+    # Direction head 기반 방향 결정 (있으면 우선 사용)
+    if "individual_directions" in details:
+        indiv_dirs_raw = details["individual_directions"]
+        if indiv_dirs_raw.ndim > 1:
+            individual_dirs = indiv_dirs_raw[:, 0] > 0.5
+        else:
+            individual_dirs = indiv_dirs_raw > 0.5
+    else:
+        individual_dirs = details["individual_returns"][:, 0] > 0
     up_count = individual_dirs.sum()
     total_models = len(individual_dirs)
 

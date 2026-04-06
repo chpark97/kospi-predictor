@@ -53,6 +53,14 @@ class LSTMAttention(nn.Module):
             nn.Sigmoid(),
         )
 
+        self.fc_direction = nn.Sequential(
+            nn.Linear(hidden_size, 64),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+            nn.Linear(64, 1),
+            nn.Sigmoid(),
+        )
+
     def forward(self, x):
         # LSTM
         lstm_out, _ = self.lstm(x)  # (batch, seq_len, hidden)
@@ -66,5 +74,6 @@ class LSTMAttention(nn.Module):
 
         pred_return = self.fc_return(last_hidden).squeeze(-1)
         confidence = self.fc_confidence(last_hidden).squeeze(-1)
+        pred_direction = self.fc_direction(last_hidden).squeeze(-1)
 
-        return pred_return, confidence
+        return pred_return, confidence, pred_direction

@@ -77,6 +77,7 @@ def main():
     sub.add_parser("backtest", help="손절/익절 전략 백테스팅")
 
     sub.add_parser("etf-backtest", help="ETF 4전략 백테스팅 (2022~2024)")
+    sub.add_parser("reset-portfolio", help="포트폴리오 초기화 (백업 후)")
 
     tn = sub.add_parser("tune", help="Optuna 하이퍼파라미터 튜닝")
     tn.add_argument("--trials", type=int, default=30)
@@ -118,6 +119,10 @@ def main():
     elif args.command == "etf-backtest":
         from evaluation.etf_backtest import run_etf_backtest
         run_etf_backtest()
+    elif args.command == "reset-portfolio":
+        from portfolio.simulator import reset_portfolio
+        result = reset_portfolio()
+        logging.info(f"초기화 완료: {result}")
     else:
         parser.print_help()
 

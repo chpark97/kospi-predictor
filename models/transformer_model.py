@@ -80,6 +80,14 @@ class TransformerPredictor(nn.Module):
             nn.Sigmoid(),
         )
 
+        self.fc_direction = nn.Sequential(
+            nn.Linear(d_model, 64),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+            nn.Linear(64, 1),
+            nn.Sigmoid(),
+        )
+
     def forward(self, x):
         # (batch, seq_len, features) -> (batch, seq_len, d_model)
         x = self.input_proj(x)
@@ -94,5 +102,6 @@ class TransformerPredictor(nn.Module):
 
         pred_return = self.fc_return(last).squeeze(-1)
         confidence = self.fc_confidence(last).squeeze(-1)
+        pred_direction = self.fc_direction(last).squeeze(-1)
 
-        return pred_return, confidence
+        return pred_return, confidence, pred_direction

@@ -275,18 +275,29 @@ def execute_trade(date, signal_valid, predicted_direction, mc_level="medium",
 
 
 def settle_trade(actual_return):
-    """정답 확인 시 미반영 수익 갱신"""
+    """정답 확인 시 미실현 손익 기록 및 MDD 업데이트"""
     pf = _load_portfolio()
-    if pf["position"] != "cash" and pf["invested_amount"] > 0:
+    current_price = _get_latest_kospi_close()
+
+    if pf["position"] != "cash" and pf["invested_amount"] > 0 and pf.get("entry_price"):
         multiplier = pf.get("etf_multiplier", 1.0)
-        pnl = pf["invested_amount"] * (actual_return / 100) * multiplier
-        total = pf["capital"] + pf["invested_amount"] + pnl
+        kospi_change = (current_price / pf["entry_price"] - 1)
+        unrealized_pnl = round(pf["invested_amount"] * kospi_change * multiplier)
+        unrealized_pct = round(kospi_change * multiplier * 100, 2)
+        pf["unrealized_pnl"] = unrealized_pnl
+        pf["unrealized_pct"] = unrealized_pct
+
+        total = pf["capital"] + pf["invested_amount"] + unrealized_pnl
         if total > pf.get("peak_capital", INITIAL_CAPITAL):
             pf["peak_capital"] = round(total)
         dd = (total / pf["peak_capital"] - 1) * 100
         if dd < pf.get("max_drawdown", 0):
             pf["max_drawdown"] = round(dd, 2)
-        _save_portfolio(pf)
+    else:
+        pf["unrealized_pnl"] = 0
+        pf["unrealized_pct"] = 0.0
+
+    _save_portfolio(pf)
     return pf
 
 
@@ -336,6 +347,9 @@ def get_portfolio_summary():
     lev_cnt = monthly.get("leverage", 0)
     norm_cnt = monthly.get("normal", 0)
 
+    unrealized_pnl = pf.get("unrealized_pnl", 0)
+    unrealized_pct = pf.get("unrealized_pct", 0.0)
+
     return {
         "capital": total_value,
         "total_return": round(total_return, 2),
@@ -349,6 +363,8 @@ def get_portfolio_summary():
         "monthly_inverse": inv_cnt,
         "monthly_leverage": lev_cnt,
         "monthly_normal": norm_cnt,
+        "unrealized_pnl": unrealized_pnl,
+        "unrealized_pct": unrealized_pct,
     }
 
 
@@ -372,14 +388,46 @@ def format_portfolio_summary():
     if parts:
         etf_trades_str = f"\n  이번 달 ETF 거래: {' / '.join(parts)}"
 
+    # 미실현 손익 라인
+    upnl = s.get("unrealized_pnl", 0)
+    upnl_pct = s.get("unrealized_pct", 0.0)
+    upnl_str = ""
+    if upnl != 0:
+        upnl_sign = "+" if upnl > 0 else ""
+        upnl_str = f"\n  미실현 손익: {upnl_sign}{upnl:,}원 ({upnl_sign}{upnl_pct:.1f}%)"
+
     return (
         f"💰 *가상 포트폴리오 (ETF 전략)*\n"
         f"  잔고: {s['capital']:,.0f}원 ({sign}{s['total_return']}%)\n"
-        f"  현재 포지션: {s['position']}\n"
+        f"  현재 포지션: {s['position']}{upnl_str}\n"
         f"  투입비율: {sizing_pct}% | MDD: {s['mdd']:.1f}%\n"
         f"  승률: {s['wins']}승 {s['losses']}패 ({s['win_rate']}%)"
         f"{etf_trades_str}"
     )
+
+
+def reset_portfolio():
+    """포트폴리오를 초기 상태로 리셋 (백업 후)"""
+    from datetime import datetime
+
+    pf = _load_portfolio()
+    prev_capital = _get_total_value(pf, _get_latest_kospi_close())
+
+    # 현재 상태 백업
+    backup_date = datetime.now().strftime("%Y%m%d_%H%M%S")
+    backup_path = PORTFOLIO_PATH.parent / f"portfolio_backup_{backup_date}.json"
+    with open(backup_path, "w") as f:
+        json.dump(pf, f, indent=2, ensure_ascii=False)
+    logger.info(f"[Portfolio] 백업 저장: {backup_path}")
+
+    # 초기화
+    new_pf = _new_portfolio()
+    _save_portfolio(new_pf)
+
+    logger.info(
+        f"[Portfolio] 포트폴리오 초기화: {prev_capital:,.0f}원 → {INITIAL_CAPITAL:,.0f}원"
+    )
+    return {"prev_capital": prev_capital, "new_capital": INITIAL_CAPITAL, "backup": str(backup_path)}
 
 
 def backtest_strategy(db_path=None):
