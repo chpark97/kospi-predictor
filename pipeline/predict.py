@@ -136,25 +136,69 @@ def _save_today_prediction(result, individual_dirs):
 
 # ── 복합 신뢰도 ──
 
-def compute_composite_confidence(details, regime):
+def compute_composite_confidence(details, regime, prediction_history=None):
+    """개선된 복합 신뢰도 — 4개 지표의 가중 합산
+
+    기존 문제: agreement*0.4 + concentration*0.3 + accuracy*0.3 이 항상 ~50으로 수렴
+    개선: 합의도/강도/일관성/방향별정확도로 변별력 확보
+    """
     all_returns = details["individual_returns"]
-    agreement = details["agreement"][0]
-
-    agreement_score = agreement * 100
-
     individual_rets = all_returns[:, 0]
+
+    # 1. 모델 합의도 (0~100)
+    # 극단적 합의(>80% 또는 <20%)일 때 높은 점수
+    up_vote_ratio = details["up_vote_ratio"][0]
+    agreement_score = abs(up_vote_ratio - 0.5) * 200  # 0~100
+
+    # 2. 예측 강도 (0~100)
+    # 개별 모델 예측치의 절대값 평균이 클수록 확신
     mean_abs = np.mean(np.abs(individual_rets))
-    spread = np.std(individual_rets)
-    concentration = min(mean_abs / max(spread, 0.01), 5.0) / 5.0 * 100 if mean_abs > 0 else 0
+    strength_score = min(mean_abs / 0.5 * 100, 100)
 
-    recent_acc, n_days = get_recent_accuracy(30)
-    accuracy_score = recent_acc if (recent_acc is not None and n_days >= 5) else 50.0
+    # 3. 모델 간 일관성 (0~100)
+    # 다수결 방향과 같은 모델들의 예측치 표준편차가 작을수록 높은 점수
+    majority_up = up_vote_ratio > 0.5
+    same_dir = individual_rets[individual_rets > 0] if majority_up else individual_rets[individual_rets <= 0]
+    if len(same_dir) > 1:
+        consistency_score = max(0, 100 - np.std(same_dir) * 200)
+    else:
+        consistency_score = 50
 
-    composite = agreement_score * 0.40 + concentration * 0.30 + accuracy_score * 0.30
+    # 4. 최근 방향별 정확도 (0~100)
+    # 현재 예측 방향(상승/하락)에서의 최근 20일 정확도
+    predicted_up = np.mean(individual_rets) > 0
+    accuracy_score = 50.0  # 기본값
+
+    if prediction_history:
+        recent_verified = [h for h in prediction_history[-20:] if h.get("actual_direction")]
+        if recent_verified:
+            same_pred = [
+                h for h in recent_verified
+                if (h["predicted_direction"] == "up") == predicted_up
+            ]
+            if same_pred:
+                dir_acc = sum(
+                    1 for h in same_pred
+                    if h["predicted_direction"] == h["actual_direction"]
+                ) / len(same_pred)
+                accuracy_score = dir_acc * 100
+    else:
+        # prediction_history가 없으면 기존 방식 fallback
+        recent_acc, n_days = get_recent_accuracy(30)
+        if recent_acc is not None and n_days >= 5:
+            accuracy_score = recent_acc
+
+    composite = (
+        agreement_score * 0.30
+        + strength_score * 0.15
+        + consistency_score * 0.25
+        + accuracy_score * 0.30
+    )
 
     logger.info(
         f"  복합신뢰도: {composite:.1f}% "
-        f"(합의={agreement_score:.0f}%×0.4 + 집중={concentration:.0f}%×0.3 + 실적={accuracy_score:.0f}%×0.3)"
+        f"(합의={agreement_score:.0f}×0.3 + 강도={strength_score:.0f}×0.15 "
+        f"+ 일관={consistency_score:.0f}×0.25 + 정확={accuracy_score:.0f}×0.3)"
     )
     return composite
 
@@ -267,7 +311,7 @@ def run_prediction():
     shap_str = format_shap_results(top_features)
 
     # 6. 복합 신뢰도
-    confidence = compute_composite_confidence(details, regime)
+    confidence = compute_composite_confidence(details, regime, history)
 
     if ms_all_same:
         confidence = min(confidence + 10.0, 100.0)
