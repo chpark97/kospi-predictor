@@ -188,10 +188,24 @@ def run_prediction():
         for i, (model, _, mt) in enumerate(ensemble.models):
             ensemble.models[i] = (model, float(dyn_weights[i]), mt)
 
+    # 3a. 지정학적 리스크 감지
+    from pipeline.geopolitical_filter import check_geopolitical_risk, format_geo_alert
+    geo_level, geo_details = check_geopolitical_risk()
+    geo_alert = format_geo_alert(geo_level, geo_details)
+    geo_forced_stop = (geo_level == "danger")
+
+    if geo_level != "safe":
+        logger.warning(f"  지정학적 리스크: {geo_level} ({geo_details['keyword_count']}건)")
+
     # 4. 레짐
     regime, _ = detect_regime()
     regime_label = REGIME_LABELS[regime]
     confidence_threshold = get_regime_threshold(regime)
+
+    # 지정학적 주의 → 임계값 +20%
+    if geo_level == "caution":
+        confidence_threshold += 20
+        logger.info(f"  지정학적 주의 → 임계값 +20% = {confidence_threshold:.0f}%")
 
     # 4a. 이벤트 감지
     from collectors.event_calendar import get_nearest_event
@@ -209,6 +223,15 @@ def run_prediction():
     X, _, dates, _ = fe.prepare_sequences(df, scaler=scaler, fit_scaler=False)
     pred_return, _, details = ensemble.predict(X[-1:])
     pred_return = pred_return[0]
+
+    # 5-1. 캘리브레이션 (상승 편향 제거)
+    from pipeline.calibration import calibrate_prediction
+    history = _load_prediction_history()
+    pred_return, cal_individual, bias_msg = calibrate_prediction(
+        pred_return, details["individual_returns"], history
+    )
+    if cal_individual is not None:
+        details["individual_returns"] = cal_individual
 
     individual_dirs = details["individual_returns"][:, 0] > 0
     up_count = individual_dirs.sum()
@@ -265,6 +288,11 @@ def run_prediction():
 
     risk_warnings = []
     signal_valid = True
+
+    # 지정학적 리스크 강제 중단
+    if geo_forced_stop:
+        risk_warnings.append("🚨 지정학적 리스크 → 거래 전면 중단")
+        signal_valid = False
 
     if vix_value and vix_value >= VIX_THRESHOLD:
         risk_warnings.append(f"⚠ 고변동성 (VIX={vix_value:.1f})")
@@ -341,13 +369,21 @@ def run_prediction():
         "portfolio": format_portfolio_summary(),
         "meta_proba": round(float(meta_proba), 3) if meta_proba is not None else None,
         "event": event_str,
+        "geo_level": geo_level,
     }
 
     _save_today_prediction(result, individual_dirs)
 
     # 10. 슬랙 알림
     try:
-        from notifications.slack_notifier import send_prediction_alert
+        from notifications.slack_notifier import send_prediction_alert, send_slack_message
+        # 지정학적 긴급 알림 (예측보다 먼저)
+        if geo_alert:
+            send_slack_message(geo_alert)
+        # 편향 경고
+        if bias_msg:
+            send_slack_message(bias_msg)
+        # 예측 알림
         send_prediction_alert(result)
     except Exception as e:
         logger.warning(f"슬랙 알림 실패: {e}")

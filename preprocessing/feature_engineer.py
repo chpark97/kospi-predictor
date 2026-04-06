@@ -465,6 +465,22 @@ class FeatureEngineer:
         # 고저 비율 (당일 변동 범위)
         df["hl_ratio"] = (df["kospi_high"] - df["kospi_low"]) / close * 100
 
+        # ── 멀티 타임프레임 피처 ──
+        # 52주 고/저점 대비 위치
+        high_252 = close.rolling(252).max()
+        low_252 = close.rolling(252).min()
+        df["pct_from_52w_high"] = (close / high_252 - 1) * 100
+        df["pct_from_52w_low"] = (close / low_252 - 1) * 100
+
+        # 주간 이동평균 추세 방향 (5주=25일)
+        ma25 = close.rolling(25).mean()
+        df["weekly_ma_trend"] = (ma25 - ma25.shift(5)) / ma25.shift(5) * 100
+
+        # 월간 vs 일간 변동성 비율
+        vol_daily = daily_pct.rolling(5).std() * np.sqrt(252) * 100
+        vol_monthly = daily_pct.rolling(60).std() * np.sqrt(252) * 100
+        df["vol_daily_monthly_ratio"] = vol_daily / vol_monthly.replace(0, np.nan)
+
         return df
 
     @staticmethod

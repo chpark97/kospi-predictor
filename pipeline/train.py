@@ -70,6 +70,23 @@ def _compute_class_weight(y):
     return float(weight)
 
 
+def compute_time_weights(n_samples):
+    """시간 기반 샘플 가중치 — 최근 데이터일수록 높은 가중치
+
+    최근 1년(~250): 3.0, 2년(~500): 2.0, 3년(~750): 1.5, 이전: 1.0
+    """
+    weights = np.ones(n_samples)
+    if n_samples > 250:
+        weights[-250:] = 3.0
+    if n_samples > 500:
+        weights[-500:-250] = 2.0
+    if n_samples > 750:
+        weights[-750:-500] = 1.5
+    # 정규화
+    weights = weights / weights.mean()
+    return weights
+
+
 def train_single_model(model, train_loader, val_loader, epochs=None, lr=None,
                        patience=None, min_epochs=None):
     """단일 모델 학습"""
@@ -78,7 +95,7 @@ def train_single_model(model, train_loader, val_loader, epochs=None, lr=None,
     patience = patience or EARLY_STOPPING_PATIENCE
     min_epochs = min_epochs or MIN_EPOCHS
 
-    optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=1e-4)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=5e-4)  # 강화된 L2
     scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
         optimizer, T_0=20, T_mult=2, eta_min=1e-6
     )
