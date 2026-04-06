@@ -196,7 +196,7 @@ def run_prediction():
 
     logger.info(f"결과 저장: {LOG_PATH}")
 
-    return {
+    result = {
         "date": today,
         "direction": "up" if pred_return > 0 else "down",
         "predicted_return": pred_return,
@@ -206,7 +206,17 @@ def run_prediction():
         "agreement": agreement_pct,
         "up_vote": f"{int(up_count)}/{total_models}",
         "risk_warnings": risk_warnings,
+        "sentiment": sentiment,
     }
+
+    # 8. 슬랙 알림
+    try:
+        from notifications.slack_notifier import send_prediction_alert
+        send_prediction_alert(result)
+    except Exception as e:
+        logger.warning(f"슬랙 알림 실패: {e}")
+
+    return result
 
 
 if __name__ == "__main__":
