@@ -314,10 +314,23 @@ def run_prediction():
     vix_status = "정상" if (vix_value and vix_value < VIX_THRESHOLD) else "경고"
     sent_str = f"{sentiment:+.2f}" if sentiment is not None else "N/A"
 
-    # 8. 포트폴리오 (손절/익절 + 포지션 사이징)
-    from portfolio.simulator import execute_trade, format_portfolio_summary
-    execute_trade(today, signal_valid, "up" if pred_return > 0 else "down",
-                  mc_level=mc_level)
+    # 8. ETF 매매 신호
+    from etf.etf_strategy import select_etf, format_etf_signal
+    predicted_direction = "up" if pred_return > 0 else "down"
+    etf_signal = select_etf(
+        predicted_direction=predicted_direction,
+        confidence=confidence,
+        regime=regime,
+        geo_level=geo_level,
+        mc_level=mc_level,
+        bias_corrected=(bias_msg is not None),
+        pred_return=pred_return,
+    )
+    etf_signal_str = format_etf_signal(etf_signal)
+
+    # 8a. 포트폴리오 (ETF 전략 기반)
+    from portfolio.simulator import execute_etf_trade, format_portfolio_summary
+    execute_etf_trade(today, signal_valid, etf_signal, current_price=None)
     portfolio_str = format_portfolio_summary()
 
     # 9. 결과 출력
@@ -334,6 +347,11 @@ def run_prediction():
         f"  주요 근거:",
         shap_str,
     ]
+    # ETF 신호
+    output_lines.append(f"  ETF 추천: {etf_signal.get('etf_name', '현금')} ({etf_signal.get('strategy_desc', '')})")
+    if etf_signal.get('etf_name') != '현금':
+        output_lines.append(f"  투입비율: {int(etf_signal.get('sizing_ratio', 0) * 100)}% | 예상수익: {etf_signal.get('expected_return', 0):+.2f}%")
+
     for w in risk_warnings:
         output_lines.append(f"  {w}")
     if signal_valid:
@@ -346,6 +364,15 @@ def run_prediction():
 
     with open(LOG_PATH, "a", encoding="utf-8") as f:
         f.write(result_text + "\n\n")
+
+    # 편향 보정 인라인 메시지
+    bias_inline = None
+    if bias_msg:
+        from pipeline.calibration import detect_bias
+        up_ratio, _, _ = detect_bias(_load_prediction_history())
+        target_ratio = 0.55
+        scale = target_ratio / up_ratio if up_ratio > 0 else 1.0
+        bias_inline = f"scale {scale:.2f} 적용"
 
     result = {
         "date": today,
@@ -370,6 +397,8 @@ def run_prediction():
         "meta_proba": round(float(meta_proba), 3) if meta_proba is not None else None,
         "event": event_str,
         "geo_level": geo_level,
+        "etf_signal": etf_signal,
+        "bias_msg_inline": bias_inline,
     }
 
     _save_today_prediction(result, individual_dirs)

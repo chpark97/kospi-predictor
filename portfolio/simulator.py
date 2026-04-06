@@ -1,6 +1,12 @@
-"""가상 포트폴리오 시뮬레이터 v2
+"""가상 포트폴리오 시뮬레이터 v3 — ETF 양방향 전략
 
-손절/익절/최대보유/포지션사이징 전략 포함.
+ETF별 수익률 시뮬레이션:
+  KODEX 200:             코스피 수익률 × 1.0
+  TIGER 200:             코스피 수익률 × 1.0
+  KODEX 레버리지:        코스피 수익률 × 1.95
+  KODEX 인버스:          코스피 수익률 × -1.0
+  TIGER 인버스:          코스피 수익률 × -1.0
+  KODEX 200선물인버스2X: 코스피 수익률 × -1.9
 """
 import json
 import logging
@@ -41,6 +47,8 @@ def _new_portfolio():
         "capital": INITIAL_CAPITAL,
         "initial_capital": INITIAL_CAPITAL,
         "position": "cash",
+        "etf_name": None,
+        "etf_multiplier": None,
         "entry_price": None,
         "entry_date": None,
         "invested_amount": 0,
@@ -51,6 +59,9 @@ def _new_portfolio():
         "losses": 0,
         "peak_capital": INITIAL_CAPITAL,
         "max_drawdown": 0.0,
+        # ETF 월간 통계
+        "monthly_etf_trades": {},  # {"inverse": 0, "leverage": 0, "normal": 0}
+        "monthly_reset_date": None,
     }
 
 
@@ -59,12 +70,24 @@ def _save_portfolio(pf):
         json.dump(pf, f, indent=2, ensure_ascii=False)
 
 
-def execute_trade(date, signal_valid, predicted_direction, mc_level="medium",
-                  current_price=None):
-    """매일 신호 + 손절/익절 로직
+def _classify_etf_type(etf_name):
+    """ETF 종류 분류"""
+    if etf_name is None:
+        return "none"
+    if "인버스" in etf_name:
+        return "inverse"
+    if "레버리지" in etf_name:
+        return "leverage"
+    return "normal"
+
+
+def execute_etf_trade(date, signal_valid, etf_signal, current_price=None):
+    """ETF 전략 기반 매매 실행
 
     Args:
-        mc_level: MC Dropout 불확실성 ("low"/"medium"/"high")
+        date: 거래일
+        signal_valid: 신호 유효 여부
+        etf_signal: etf_strategy.select_etf() 결과 dict
         current_price: 현재 코스피 종가
     """
     pf = _load_portfolio()
@@ -72,17 +95,25 @@ def execute_trade(date, signal_valid, predicted_direction, mc_level="medium",
     if pf["trades"] and pf["trades"][-1].get("date") == date:
         return pf
 
-    # 현재가 조회
     if current_price is None:
         current_price = _get_latest_kospi_close()
+
+    # 월간 통계 리셋
+    month_key = date[:7]  # "2026-04"
+    if pf.get("monthly_reset_date") != month_key:
+        pf["monthly_etf_trades"] = {"inverse": 0, "leverage": 0, "normal": 0}
+        pf["monthly_reset_date"] = month_key
 
     action = "hold"
     exit_reason = None
 
     # === 포지션 보유 중 ===
-    if pf["position"] == "long" and pf["entry_price"]:
+    if pf["position"] != "cash" and pf["entry_price"]:
         pf["hold_days"] += 1
-        unrealized = (current_price / pf["entry_price"] - 1) * 100
+        multiplier = pf.get("etf_multiplier", 1.0)
+        kospi_change = (current_price / pf["entry_price"] - 1)
+        # ETF 수익률 = 코스피 수익률 × multiplier (일별 복리)
+        unrealized = kospi_change * multiplier * 100
 
         # 손절
         if unrealized <= STOP_LOSS:
@@ -96,19 +127,22 @@ def execute_trade(date, signal_valid, predicted_direction, mc_level="medium",
         elif pf["hold_days"] >= MAX_HOLD_DAYS:
             action = "sell"
             exit_reason = f"보유기한 ({pf['hold_days']}일)"
-        # 하락 신호
-        elif signal_valid and predicted_direction == "down":
-            action = "sell"
-            exit_reason = "하락 신호"
+        # 반대 방향 신호 발생
+        elif signal_valid and etf_signal.get("etf_name") != "현금":
+            current_dir = pf.get("position", "cash")
+            new_dir = etf_signal.get("direction", "none")
+            if current_dir != new_dir and new_dir != "none":
+                action = "sell"
+                exit_reason = "방향 전환"
 
     # === 현금 보유 중 ===
     elif pf["position"] == "cash":
-        if signal_valid and predicted_direction == "up":
+        if signal_valid and etf_signal.get("etf_name") != "현금":
             action = "buy"
 
     # 매매 실행
     if action == "buy":
-        sizing = SIZING_MAP.get(mc_level, 0.6)
+        sizing = etf_signal.get("sizing_ratio", 0.6)
         invested = pf["capital"] * sizing
         commission = invested * COMMISSION_RATE
         pf["invested_amount"] = round(invested - commission)
@@ -117,11 +151,19 @@ def execute_trade(date, signal_valid, predicted_direction, mc_level="medium",
         pf["entry_date"] = date
         pf["hold_days"] = 0
         pf["sizing_ratio"] = sizing
-        pf["position"] = "long"
+        pf["position"] = etf_signal.get("direction", "long")
+        pf["etf_name"] = etf_signal.get("etf_name")
+        pf["etf_multiplier"] = etf_signal.get("multiplier", 1.0)
 
-    elif action == "sell" and pf["position"] == "long":
+        # 월간 거래 카운트
+        etf_type = _classify_etf_type(pf["etf_name"])
+        pf["monthly_etf_trades"][etf_type] = pf["monthly_etf_trades"].get(etf_type, 0) + 1
+
+    elif action == "sell" and pf["position"] != "cash":
         if pf["entry_price"] and current_price:
-            pnl_pct = (current_price / pf["entry_price"] - 1)
+            multiplier = pf.get("etf_multiplier", 1.0)
+            kospi_change = (current_price / pf["entry_price"] - 1)
+            pnl_pct = kospi_change * multiplier
             pnl = pf["invested_amount"] * pnl_pct
             commission = abs(pf["invested_amount"] + pnl) * COMMISSION_RATE
             pf["capital"] += round(pf["invested_amount"] + pnl - commission)
@@ -132,13 +174,37 @@ def execute_trade(date, signal_valid, predicted_direction, mc_level="medium",
                 pf["losses"] += 1
 
         pf["position"] = "cash"
+        pf["etf_name"] = None
+        pf["etf_multiplier"] = None
         pf["entry_price"] = None
         pf["entry_date"] = None
         pf["invested_amount"] = 0
         pf["hold_days"] = 0
 
+        # 반대 방향 매수 즉시 진입
+        if exit_reason == "방향 전환" and signal_valid and etf_signal.get("etf_name") != "현금":
+            sizing = etf_signal.get("sizing_ratio", 0.6)
+            invested = pf["capital"] * sizing
+            commission_buy = invested * COMMISSION_RATE
+            pf["invested_amount"] = round(invested - commission_buy)
+            pf["capital"] -= round(invested)
+            pf["entry_price"] = current_price
+            pf["entry_date"] = date
+            pf["hold_days"] = 0
+            pf["sizing_ratio"] = sizing
+            pf["position"] = etf_signal.get("direction", "long")
+            pf["etf_name"] = etf_signal.get("etf_name")
+            pf["etf_multiplier"] = etf_signal.get("multiplier", 1.0)
+
+            etf_type = _classify_etf_type(pf["etf_name"])
+            pf["monthly_etf_trades"][etf_type] = pf["monthly_etf_trades"].get(etf_type, 0) + 1
+
     # MDD 추적
-    total_value = pf["capital"] + (pf["invested_amount"] if pf["position"] == "long" else 0)
+    total_value = pf["capital"]
+    if pf["position"] != "cash" and pf["invested_amount"] > 0 and pf["entry_price"]:
+        multiplier = pf.get("etf_multiplier", 1.0)
+        kospi_change = (current_price / pf["entry_price"] - 1)
+        total_value += pf["invested_amount"] * (1 + kospi_change * multiplier)
     if total_value > pf.get("peak_capital", INITIAL_CAPITAL):
         pf["peak_capital"] = total_value
     dd = (total_value / pf["peak_capital"] - 1) * 100
@@ -149,6 +215,7 @@ def execute_trade(date, signal_valid, predicted_direction, mc_level="medium",
         "date": date,
         "action": action,
         "price": current_price,
+        "etf_name": pf.get("etf_name"),
         "exit_reason": exit_reason,
     }
     pf["trades"].append(trade)
@@ -156,19 +223,39 @@ def execute_trade(date, signal_valid, predicted_direction, mc_level="medium",
     _save_portfolio(pf)
 
     if action != "hold":
-        logger.info(f"  [Portfolio] {action.upper()} @ {current_price:.1f}"
-                     + (f" ({exit_reason})" if exit_reason else "")
-                     + f" sizing={pf.get('sizing_ratio', 1):.0%}")
+        etf_str = pf.get("etf_name") or ""
+        logger.info(
+            f"  [Portfolio] {action.upper()} {etf_str} @ {current_price:.1f}"
+            + (f" ({exit_reason})" if exit_reason else "")
+            + f" sizing={pf.get('sizing_ratio', 1):.0%}"
+        )
 
     return pf
 
 
+# 하위 호환: 기존 execute_trade도 유지
+def execute_trade(date, signal_valid, predicted_direction, mc_level="medium",
+                  current_price=None):
+    """기존 단순 매수/현금 전략 (하위 호환)"""
+    if predicted_direction == "up" and signal_valid:
+        etf_signal = {
+            "etf_name": "KODEX 200",
+            "direction": "long",
+            "multiplier": 1.0,
+            "sizing_ratio": SIZING_MAP.get(mc_level, 0.6),
+        }
+    else:
+        etf_signal = {"etf_name": "현금", "direction": "none", "sizing_ratio": 0.0}
+
+    return execute_etf_trade(date, signal_valid, etf_signal, current_price)
+
+
 def settle_trade(actual_return):
-    """정답 확인 시 미반영 수익 갱신 (hold 중인 경우)"""
+    """정답 확인 시 미반영 수익 갱신"""
     pf = _load_portfolio()
-    # 현재 포지션이 long이면 MDD 업데이트만 수행
-    if pf["position"] == "long" and pf["invested_amount"] > 0:
-        pnl = pf["invested_amount"] * (actual_return / 100)
+    if pf["position"] != "cash" and pf["invested_amount"] > 0:
+        multiplier = pf.get("etf_multiplier", 1.0)
+        pnl = pf["invested_amount"] * (actual_return / 100) * multiplier
         total = pf["capital"] + pf["invested_amount"] + pnl
         if total > pf.get("peak_capital", INITIAL_CAPITAL):
             pf["peak_capital"] = round(total)
@@ -191,7 +278,9 @@ def _get_latest_kospi_close():
 
 def get_portfolio_summary():
     pf = _load_portfolio()
-    total_value = pf["capital"] + (pf["invested_amount"] if pf["position"] == "long" else 0)
+    total_value = pf["capital"]
+    if pf["position"] != "cash" and pf["invested_amount"] > 0:
+        total_value += pf["invested_amount"]
     initial = pf["initial_capital"]
     total_return = (total_value / initial - 1) * 100
     wins = pf["wins"]
@@ -199,20 +288,29 @@ def get_portfolio_summary():
     total_trades = wins + losses
     win_rate = wins / total_trades * 100 if total_trades > 0 else 0
 
-    # 샤프 비율 (거래 기반)
+    # 샤프 비율 추정
     trade_rets = []
     for t in pf["trades"]:
-        if t["action"] == "sell" and t.get("price") and t.get("exit_reason"):
-            trade_rets.append(1.0)  # 대략적 추정
+        if t["action"] == "sell":
+            trade_rets.append(1.0)
 
     position = "현금 보유"
     entry_info = ""
-    if pf["position"] == "long" and pf["entry_price"]:
-        position = "매수 중"
-        sl = pf["entry_price"] * (1 + STOP_LOSS / 100)
-        tp = pf["entry_price"] * (1 + TAKE_PROFIT / 100)
-        entry_info = f" (진입 {pf['entry_price']:.1f} / 손절 {sl:.1f} / 익절 {tp:.1f})"
+    etf_name = pf.get("etf_name")
+
+    if pf["position"] != "cash" and pf.get("entry_price"):
+        multiplier = pf.get("etf_multiplier", 1.0)
+        position = f"{etf_name} 매수 중" if etf_name else "매수 중"
+        sl = pf["entry_price"] * (1 + STOP_LOSS / 100 / abs(multiplier)) if multiplier else pf["entry_price"]
+        tp = pf["entry_price"] * (1 + TAKE_PROFIT / 100 / abs(multiplier)) if multiplier else pf["entry_price"]
+        entry_info = f" (진입 {pf['entry_price']:.0f} / 손절 {sl:.0f} / 익절 {tp:.0f})"
         position += entry_info
+
+    # 월간 ETF 거래 통계
+    monthly = pf.get("monthly_etf_trades", {})
+    inv_cnt = monthly.get("inverse", 0)
+    lev_cnt = monthly.get("leverage", 0)
+    norm_cnt = monthly.get("normal", 0)
 
     return {
         "capital": total_value,
@@ -223,6 +321,10 @@ def get_portfolio_summary():
         "win_rate": round(win_rate, 1),
         "mdd": pf.get("max_drawdown", 0),
         "sizing": pf.get("sizing_ratio", 1.0),
+        "etf_name": etf_name,
+        "monthly_inverse": inv_cnt,
+        "monthly_leverage": lev_cnt,
+        "monthly_normal": norm_cnt,
     }
 
 
@@ -230,17 +332,34 @@ def format_portfolio_summary():
     s = get_portfolio_summary()
     sign = "+" if s["total_return"] >= 0 else ""
     sizing_pct = int(s.get("sizing", 1.0) * 100)
+
+    # 월간 ETF 거래 내역
+    inv = s.get("monthly_inverse", 0)
+    lev = s.get("monthly_leverage", 0)
+    norm = s.get("monthly_normal", 0)
+    etf_trades_str = ""
+    parts = []
+    if inv > 0:
+        parts.append(f"인버스 {inv}회")
+    if lev > 0:
+        parts.append(f"레버리지 {lev}회")
+    if norm > 0:
+        parts.append(f"일반 {norm}회")
+    if parts:
+        etf_trades_str = f"\n  이번 달 ETF 거래: {' / '.join(parts)}"
+
     return (
-        f"💰 *가상 포트폴리오*\n"
-        f"  잔고: {s['capital']:,}원 ({sign}{s['total_return']}%)\n"
-        f"  포지션: {s['position']}\n"
+        f"💰 *가상 포트폴리오 (ETF 전략)*\n"
+        f"  잔고: {s['capital']:,.0f}원 ({sign}{s['total_return']}%)\n"
+        f"  현재 포지션: {s['position']}\n"
         f"  투입비율: {sizing_pct}% | MDD: {s['mdd']:.1f}%\n"
         f"  승률: {s['wins']}승 {s['losses']}패 ({s['win_rate']}%)"
+        f"{etf_trades_str}"
     )
 
 
 def backtest_strategy(db_path=None):
-    """손절/익절 전략 백테스팅 (2022~2024)"""
+    """기존 단순 백테스팅 (하위 호환)"""
     db_path = db_path or DB_PATH
     conn = sqlite3.connect(db_path)
     rows = conn.execute(
@@ -252,36 +371,25 @@ def backtest_strategy(db_path=None):
         logger.warning("백테스트 데이터 부족")
         return
 
-    dates = [r[0] for r in rows]
     closes = np.array([r[1] for r in rows])
     rets = np.diff(closes) / closes[:-1] * 100
-
-    # === 전략 1: 단순 매수 후 보유 (Buy & Hold) ===
     bh_ret = (closes[-1] / closes[0] - 1) * 100
 
-    # === 전략 2: 매일 매수 (단순) ===
-    simple_rets = rets / 100  # 상승일만 매수 가정 → 전체 수익
-    simple_cum = (np.prod(1 + simple_rets * 0.5) - 1) * 100  # 50% 노출
-
-    # === 전략 3: 손절/익절 시뮬레이션 ===
+    # 손절/익절 시뮬레이션
     capital = INITIAL_CAPITAL
     position = "cash"
     entry_price = None
     hold_days = 0
-    wins = 0
-    losses = 0
+    wins, losses = 0, 0
     peak = capital
-
     daily_values = [capital]
 
     for i in range(len(closes)):
         if position == "long":
             hold_days += 1
             unrealized = (closes[i] / entry_price - 1) * 100
-
             if unrealized <= STOP_LOSS or unrealized >= TAKE_PROFIT or hold_days >= MAX_HOLD_DAYS:
-                # 청산
-                pnl = capital * 0.8 * (closes[i] / entry_price - 1)  # 80% 투입
+                pnl = capital * 0.8 * (closes[i] / entry_price - 1)
                 capital += pnl - abs(capital * 0.8) * COMMISSION_RATE * 2
                 if pnl > 0:
                     wins += 1
@@ -290,9 +398,7 @@ def backtest_strategy(db_path=None):
                 position = "cash"
                 entry_price = None
                 hold_days = 0
-
         elif position == "cash" and i < len(rets):
-            # 간단한 모멘텀 신호: 전일 양봉이면 매수
             if i > 0 and rets[i - 1] > 0:
                 position = "long"
                 entry_price = closes[i]
@@ -314,7 +420,8 @@ def backtest_strategy(db_path=None):
     logger.info("=" * 50)
     logger.info(f"Buy & Hold: {bh_ret:+.2f}%")
     logger.info(f"손절/익절 전략: {final_return:+.2f}% | 샤프={sharpe:.2f} | MDD={mdd:.1f}%")
-    logger.info(f"  {wins}승 {losses}패 ({wins/(wins+losses)*100:.0f}%)" if wins + losses > 0 else "")
+    if wins + losses > 0:
+        logger.info(f"  {wins}승 {losses}패 ({wins/(wins+losses)*100:.0f}%)")
 
     return {
         "buy_hold": round(bh_ret, 2),

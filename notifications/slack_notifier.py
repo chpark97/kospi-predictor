@@ -1,4 +1,4 @@
-"""슬랙 웹훅 알림 모듈"""
+"""슬랙 웹훅 알림 모듈 — ETF 매매 신호 통합"""
 import json
 import logging
 import os
@@ -36,7 +36,7 @@ def send_slack_message(text):
 
 
 def send_prediction_alert(result: dict):
-    """최종 슬랙 예측 알림 — 모든 기능 통합"""
+    """최종 슬랙 예측 알림 — ETF 매매 신호 통합 버전"""
     date = result.get("date", "N/A")
     pred_ret = result.get("predicted_return", 0)
     confidence = result.get("confidence", 0)
@@ -54,6 +54,8 @@ def send_prediction_alert(result: dict):
     mc_label = result.get("mc_label", "")
     portfolio = result.get("portfolio", "")
     meta_proba = result.get("meta_proba")
+    bias_msg_inline = result.get("bias_msg_inline")
+    etf_signal = result.get("etf_signal")
 
     # 방향
     if not signal_valid:
@@ -66,7 +68,15 @@ def send_prediction_alert(result: dict):
     sign = "+" if pred_ret > 0 else ""
 
     # VIX
-    vix_str = f"{vix:.1f} ({'경고' if vix >= 30 else '정상'})" if vix else "N/A"
+    if vix:
+        if vix >= 30:
+            vix_str = f"{vix:.1f} (경고)"
+        elif vix >= 20:
+            vix_str = f"{vix:.1f} (주의)"
+        else:
+            vix_str = f"{vix:.1f} (정상)"
+    else:
+        vix_str = "N/A"
 
     # 감성
     if sentiment is not None:
@@ -95,6 +105,10 @@ def send_prediction_alert(result: dict):
     if ms_str:
         text += f"📅 단기 전망: {ms_str}\n"
 
+    # 편향 보정 인라인
+    if bias_msg_inline:
+        text += f"⚠️ 편향 보정: {bias_msg_inline}\n"
+
     text += (
         f"\n방향: *{direction_str}*\n"
         f"예측 등락률: *{sign}{pred_ret:.2f}%* (±{mc_std:.2f}%) {mc_emoji} {mc_label}\n"
@@ -111,6 +125,10 @@ def send_prediction_alert(result: dict):
     if reasons:
         text += f"\n{reasons}"
 
+    # ETF 매매 신호 섹션
+    if etf_signal:
+        text += "\n\n" + _format_etf_section(etf_signal)
+
     text += f"\n\n{status_line}"
 
     warnings = result.get("risk_warnings", [])
@@ -121,3 +139,36 @@ def send_prediction_alert(result: dict):
         text += f"\n\n{portfolio}"
 
     return _post_to_slack(text)
+
+
+def _format_etf_section(etf_signal):
+    """ETF 매매 신호 슬랙 섹션"""
+    etf_name = etf_signal.get("etf_name", "현금")
+
+    if etf_name == "현금":
+        return (
+            f"📈 *ETF 매매 신호*\n"
+            f"  현금 보유 ({etf_signal.get('reason', '')})"
+        )
+
+    strategy = etf_signal.get("strategy_desc", "")
+    sizing = int(etf_signal.get("sizing_ratio", 0) * 100)
+    expected = etf_signal.get("expected_return", 0)
+    risk = etf_signal.get("risk", "")
+    sign = "+" if expected > 0 else ""
+
+    # 불확실성 이모지
+    if sizing >= 100:
+        unc_label = "낮은 불확실성"
+    elif sizing >= 60:
+        unc_label = "보통 불확실성"
+    else:
+        unc_label = "높은 불확실성"
+
+    return (
+        f"📈 *ETF 매매 신호*\n"
+        f"  추천 ETF: {etf_name}\n"
+        f"  전략: {strategy}\n"
+        f"  투입비율: {sizing}% ({unc_label})\n"
+        f"  예상 수익: {sign}{expected:.2f}%"
+    )
