@@ -1,7 +1,6 @@
 """슬랙 웹훅 알림 모듈
 
 환경변수 SLACK_WEBHOOK_URL에 웹훅 URL을 설정하세요.
-예: export SLACK_WEBHOOK_URL="https://hooks.slack.com/services/XXX/YYY/ZZZ"
 """
 import json
 import logging
@@ -15,11 +14,9 @@ SLACK_WEBHOOK_URL = os.environ.get("SLACK_WEBHOOK_URL", "")
 
 
 def _post_to_slack(text):
-    """슬랙 웹훅으로 메시지 전송 (내부 공통)"""
     if not SLACK_WEBHOOK_URL:
-        logger.warning("[Slack] SLACK_WEBHOOK_URL 환경변수가 설정되지 않았습니다")
+        logger.warning("[Slack] SLACK_WEBHOOK_URL 환경변수 미설정")
         return False
-
     try:
         resp = requests.post(
             SLACK_WEBHOOK_URL,
@@ -30,31 +27,31 @@ def _post_to_slack(text):
         if resp.status_code == 200:
             logger.info("[Slack] 알림 전송 완료")
             return True
-        else:
-            logger.warning(f"[Slack] 전송 실패: {resp.status_code} {resp.text}")
-            return False
+        logger.warning(f"[Slack] 전송 실패: {resp.status_code} {resp.text}")
+        return False
     except Exception as e:
         logger.warning(f"[Slack] 전송 오류: {e}")
         return False
 
 
 def send_slack_message(text):
-    """범용 슬랙 메시지 전송"""
     return _post_to_slack(text)
 
 
 def send_prediction_alert(result: dict):
-    """예측 결과를 슬랙으로 전송"""
+    """최종 포맷 슬랙 예측 알림"""
     date = result.get("date", "N/A")
     pred_ret = result.get("predicted_return", 0)
     confidence = result.get("confidence", 0)
     signal_valid = result.get("signal_valid", False)
     vix = result.get("vix")
     up_vote = result.get("up_vote", "?/?")
+    agreement = result.get("agreement", 0)
     sentiment = result.get("sentiment")
-    warnings = result.get("risk_warnings", [])
     regime_label = result.get("regime_label", "")
     threshold = result.get("confidence_threshold", 65)
+    ms_str = result.get("multistep", "")
+    top_features = result.get("top_features", [])
 
     # 방향
     if not signal_valid:
@@ -68,41 +65,52 @@ def send_prediction_alert(result: dict):
 
     # VIX
     if vix is not None:
-        vix_status = "경고" if vix >= 30 else "정상"
-        vix_str = f"{vix:.1f} ({vix_status})"
+        vix_str = f"{vix:.1f} ({'경고' if vix >= 30 else '정상'})"
     else:
         vix_str = "N/A"
 
     # 감성
     if sentiment is not None:
-        if sentiment > 0.1:
-            sent_label = "긍정"
-        elif sentiment < -0.1:
-            sent_label = "부정"
-        else:
-            sent_label = "중립"
+        sent_label = "긍정" if sentiment > 0.1 else ("부정" if sentiment < -0.1 else "중립")
         sent_str = f"{sent_label} ({sentiment:+.1f})"
     else:
         sent_str = "N/A"
 
     # 신호 상태
-    if signal_valid:
-        status_line = "✅ 거래 신호 있음"
-    else:
-        status_line = "⚠️ 리스크 필터 발동"
+    status_line = "✅ 거래 신호 있음" if signal_valid else "⚠️ 리스크 필터 발동"
 
+    # 주요 근거
+    reasons = ""
+    if top_features:
+        reason_lines = []
+        for i, (name, direction) in enumerate(top_features[:3], 1):
+            reason_lines.append(f"  {i}. {name} ({direction})")
+        reasons = "\n🔍 *주요 근거:*\n" + "\n".join(reason_lines)
+
+    # 메시지 조립
     text = (
         f"📊 *[{date}] 코스피 예측*\n\n"
-        f"레짐: {regime_label}\n"
-        f"방향: *{direction_str}*\n"
-        f"예측 등락률: *{sign}{pred_ret:.2f}%*\n"
-        f"신뢰도: {confidence:.1f}% (임계 {threshold:.0f}%)\n"
-        f"모델 합의: {up_vote}\n"
-        f"VIX: {vix_str}\n"
-        f"감성: {sent_str}\n\n"
-        f"{status_line}"
+        f"🌍 시장 레짐: {regime_label}\n"
     )
 
+    if ms_str:
+        text += f"📅 단기 전망: {ms_str}\n"
+
+    text += (
+        f"\n방향: *{direction_str}*\n"
+        f"예측 등락률: *{sign}{pred_ret:.2f}%*\n"
+        f"신뢰도: {confidence:.1f}% (임계 {threshold:.0f}%)\n"
+        f"모델 합의: {up_vote} ({agreement:.0f}%)\n"
+        f"VIX: {vix_str}\n"
+        f"감성: {sent_str}"
+    )
+
+    if reasons:
+        text += f"\n{reasons}"
+
+    text += f"\n\n{status_line}"
+
+    warnings = result.get("risk_warnings", [])
     if warnings:
         text += "\n" + "\n".join(warnings)
 

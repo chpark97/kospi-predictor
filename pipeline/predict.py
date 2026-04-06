@@ -231,8 +231,23 @@ def run_prediction():
     up_count = individual_dirs.sum()
     total_models = len(individual_dirs)
 
+    # 5a. 멀티스텝 예측 (1/2/3일 후)
+    from pipeline.multistep import predict_multistep, format_multistep
+    ms_dirs, ms_rets, ms_all_same = predict_multistep(ensemble, X[-1:])
+    ms_str = format_multistep(ms_dirs)
+
+    # 5b. SHAP 피처 중요도
+    from pipeline.shap_explain import get_top_features, format_shap_results
+    top_features = get_top_features(ensemble, X[-1:], fe.feature_names, top_k=5)
+    shap_str = format_shap_results(top_features)
+
     # 6. 복합 신뢰도
     confidence = compute_composite_confidence(details, regime)
+
+    # 멀티스텝 보너스: 3일 모두 같은 방향이면 +10%
+    if ms_all_same:
+        confidence = min(confidence + 10.0, 100.0)
+        logger.info(f"  멀티스텝 보너스: +10% → {confidence:.1f}%")
 
     # 7. 리스크 필터
     vix_value, vix_date = get_latest_vix()
@@ -269,12 +284,15 @@ def run_prediction():
     output_lines = [
         f"\n[{today}] 코스피 예측",
         f"  레짐: {regime_label}",
+        f"  단기전망: {ms_str}",
         f"  방향: {direction}" if signal_valid else f"  방향: ― (신호 무력화)",
         f"  예측 등락률: {sign}{pred_return:.2f}%",
         f"  신뢰도: {confidence:.1f}% (임계={confidence_threshold:.0f}%)",
         f"  모델 합의: {int(up_count)}/{total_models} 상승",
         f"  VIX: {vix_value:.1f} ({vix_status})" if vix_value else "  VIX: N/A",
         f"  감성: {sent_str}",
+        f"  주요 근거:",
+        shap_str,
     ]
     for w in risk_warnings:
         output_lines.append(f"  {w}")
@@ -303,6 +321,8 @@ def run_prediction():
         "regime": regime,
         "regime_label": regime_label,
         "confidence_threshold": confidence_threshold,
+        "multistep": ms_str,
+        "top_features": [(n, d) for n, d, _ in top_features],
     }
 
     # 예측 이력 저장
@@ -456,6 +476,121 @@ def run_weekly_report():
         logger.warning(f"슬랙 전송 실패: {e}")
 
     return {"total": total, "accuracy": accuracy, "weekly_return": weekly_return}
+
+
+# ── 신뢰도 실적 소급 초기화 ──
+
+def backfill_prediction_history():
+    """과거 Walk-forward 결과를 prediction_history에 소급 입력"""
+    logger.info("신뢰도 실적 소급 초기화 중...")
+
+    conn = sqlite3.connect(DB_PATH)
+    rows = conn.execute(
+        "SELECT date, close FROM kospi_index ORDER BY date DESC LIMIT 60"
+    ).fetchall()
+    conn.close()
+
+    if len(rows) < 2:
+        logger.warning("코스피 데이터 부족")
+        return
+
+    rows = rows[::-1]  # 오래된→최신
+    history = _load_prediction_history()
+    existing_dates = {h["date"] for h in history}
+
+    # 모델 로드
+    try:
+        ensemble, scaler, feature_names = load_ensemble()
+    except FileNotFoundError:
+        logger.warning("모델 없음 - 소급 불가")
+        return
+
+    fe = FeatureEngineer()
+    df = fe.build_dataset()
+    X_all, y_all, dates_all, _ = fe.prepare_sequences(df, scaler=scaler, fit_scaler=False)
+
+    member_names = [f"{mt}_{sd}" for mt, sd in ENSEMBLE_MEMBERS]
+    backfilled = 0
+
+    for i in range(max(0, len(X_all) - 30), len(X_all)):
+        pred_date = dates_all[i]
+        if pred_date in existing_dates:
+            continue
+
+        # 예측
+        pred_ret, _, details = ensemble.predict(X_all[i:i+1])
+        individual_dirs = list(details["individual_returns"][:, 0] > 0)
+
+        # 실제 결과 (y_all에 이미 있음)
+        actual_ret = y_all[i]
+        actual_up = actual_ret > 0
+
+        entry = {
+            "date": pred_date,
+            "predicted_direction": "up" if pred_ret[0] > 0 else "down",
+            "predicted_return": round(float(pred_ret[0]), 4),
+            "confidence": 50.0,
+            "signal_valid": True,
+            "individual_dirs": [bool(d) for d in individual_dirs],
+            "actual_direction": "up" if actual_up else "down",
+            "actual_return": round(float(actual_ret), 4),
+        }
+        history.append(entry)
+
+        # 동적 가중치 업데이트
+        update_weights(individual_dirs, actual_up, member_names)
+        backfilled += 1
+
+    history = history[-90:]
+    _save_prediction_history(history)
+    logger.info(f"소급 완료: {backfilled}건 추가 (총 {len(history)}건)")
+
+
+# ── 주간 자동 재학습 ──
+
+def run_retrain():
+    """전체 모델 재학습 + 동적 가중치 초기화"""
+    import time
+    start = time.time()
+
+    logger.info("=" * 50)
+    logger.info("주간 모델 재학습 시작")
+    logger.info("=" * 50)
+
+    # 1. 데이터 최신화
+    from collectors import YahooCollector, KRXCollector, FREDCollector
+    YahooCollector().collect()
+    KRXCollector().collect()
+    FREDCollector().collect()
+
+    # 2. 앙상블 재학습
+    from pipeline.train import walk_forward_train
+    walk_forward_train("ensemble")
+
+    elapsed = int(time.time() - start)
+    minutes = elapsed // 60
+
+    # 3. 소급 초기화
+    backfill_prediction_history()
+
+    # 4. 알림
+    conn = sqlite3.connect(DB_PATH)
+    r = conn.execute("SELECT MIN(date), MAX(date) FROM kospi_index").fetchone()
+    conn.close()
+
+    msg = (
+        f"🔄 *주간 모델 재학습 완료*\n\n"
+        f"학습 데이터: {r[0]} ~ {r[1]}\n"
+        f"소요 시간: {minutes}분\n"
+        f"앙상블: {len(ENSEMBLE_MEMBERS)}개 모델"
+    )
+    logger.info(msg)
+
+    try:
+        from notifications.slack_notifier import send_slack_message
+        send_slack_message(msg)
+    except Exception as e:
+        logger.warning(f"슬랙 전송 실패: {e}")
 
 
 if __name__ == "__main__":

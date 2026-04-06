@@ -25,28 +25,49 @@ SAVE_DIR = Path(__file__).parent.parent / "saved_models"
 
 
 class DirectionalLoss(nn.Module):
-    """MSE + 방향 BCE + 확신도 BCE 커스텀 손실"""
+    """MSE + 방향 BCE(클래스 가중치 적용) + 확신도 BCE 커스텀 손실"""
 
-    def __init__(self, direction_weight=0.5, confidence_weight=0.3):
+    def __init__(self, direction_weight=0.5, confidence_weight=0.3, pos_weight=None):
         super().__init__()
         self.mse = nn.MSELoss()
-        self.bce = nn.BCELoss()
         self.dw = direction_weight
         self.cw = confidence_weight
+        # 클래스 불균형 보정: 하락일이 적으면 하락 맞추는 데 더 큰 가중치
+        if pos_weight is not None:
+            self.bce_dir = nn.BCEWithLogitsLoss(pos_weight=torch.tensor([pos_weight]))
+            self.use_logits = True
+        else:
+            self.bce_dir = nn.BCELoss()
+            self.use_logits = False
+        self.bce_conf = nn.BCELoss()
 
     def forward(self, pred_return, confidence, y_true):
         loss_mse = self.mse(pred_return, y_true)
 
         true_dir = (y_true > 0).float()
-        pred_prob = torch.sigmoid(pred_return * 3)
-        loss_dir = self.bce(pred_prob, true_dir)
+        if self.use_logits:
+            loss_dir = self.bce_dir(pred_return * 3, true_dir)
+        else:
+            pred_prob = torch.sigmoid(pred_return * 3)
+            loss_dir = self.bce_dir(pred_prob, true_dir)
 
         with torch.no_grad():
             pred_dir = (pred_return > 0).float()
             correct = (true_dir == pred_dir).float()
-        loss_conf = self.bce(confidence, correct)
+        loss_conf = self.bce_conf(confidence, correct)
 
         return loss_mse + self.dw * loss_dir + self.cw * loss_conf
+
+
+def _compute_class_weight(y):
+    """상승/하락 비율로 클래스 가중치 계산"""
+    n_up = (y > 0).sum()
+    n_down = (y <= 0).sum()
+    if n_down == 0 or n_up == 0:
+        return None
+    # 소수 클래스에 더 큰 가중치
+    weight = n_up / n_down  # >1이면 하락이 소수 → 하락 가중
+    return float(weight)
 
 
 def train_single_model(model, train_loader, val_loader, epochs=None, lr=None,
@@ -62,7 +83,16 @@ def train_single_model(model, train_loader, val_loader, epochs=None, lr=None,
         optimizer, T_0=20, T_mult=2, eta_min=1e-6
     )
 
-    criterion = DirectionalLoss()
+    # 클래스 불균형 보정: train loader에서 y 추출
+    all_y = []
+    for _, y_b in train_loader:
+        all_y.append(y_b)
+    all_y_cat = torch.cat(all_y)
+    pos_w = _compute_class_weight(all_y_cat.numpy())
+    if pos_w and abs(pos_w - 1.0) > 0.1:
+        logger.debug(f"    클래스 가중치: pos_weight={pos_w:.2f}")
+
+    criterion = DirectionalLoss(pos_weight=pos_w)
     mse_loss = nn.MSELoss()
 
     best_val_loss = float("inf")

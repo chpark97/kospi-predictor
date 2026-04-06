@@ -201,7 +201,12 @@ class FeatureEngineer:
     # ── 글로벌 시장 수익률/시차 피처 ──
 
     def _add_global_market_features(self, df):
-        """글로벌 지수의 수익률 및 lag 피처"""
+        """글로벌 지수의 수익률 및 lag 피처
+
+        주의: 미국/유럽 지수는 한국 장마감 후에 거래되므로,
+        당일 수익률(ret1d)을 당일 피처로 쓰면 미래 데이터 누수.
+        모든 글로벌 수익률에 shift(1)을 적용하여 전일까지만 사용.
+        """
         global_cols = ["sp500", "nasdaq", "dow", "nikkei", "hangseng", "shanghai",
                        "wti", "copper", "usdkrw"]
 
@@ -209,69 +214,68 @@ class FeatureEngineer:
             if col not in df.columns:
                 continue
 
-            # 1일, 5일 수익률
-            df[f"{col}_ret1d"] = df[col].pct_change(1) * 100
-            df[f"{col}_ret5d"] = df[col].pct_change(5) * 100
+            ret1d = df[col].pct_change(1) * 100
+            ret5d = df[col].pct_change(5) * 100
 
-            # 1일 lag (전일 미국 시장 → 당일 코스피 영향)
-            df[f"{col}_ret1d_lag1"] = df[f"{col}_ret1d"].shift(1)
+            # 모든 수익률에 shift(1) 적용 — 전일 데이터만 사용
+            df[f"{col}_ret1d"] = ret1d.shift(1)
+            df[f"{col}_ret5d"] = ret5d.shift(1)
+            # lag2도 추가 (이틀 전)
+            df[f"{col}_ret1d_lag2"] = ret1d.shift(2)
 
-        # VIX 파생 피처
+        # VIX 파생 피처 (VIX도 미국 시장이므로 shift 필요)
         if "vix" in df.columns:
-            df["vix_ret1d"] = df["vix"].pct_change(1) * 100
-            df["vix_ret5d"] = df["vix"].pct_change(5) * 100
-            df["vix_ma5_ratio"] = df["vix"] / df["vix"].rolling(5).mean()
-            df["vix_level"] = pd.cut(df["vix"], bins=[0, 15, 20, 25, 30, 100],
+            df["vix_ret1d"] = df["vix"].pct_change(1).shift(1) * 100
+            df["vix_ret5d"] = df["vix"].pct_change(5).shift(1) * 100
+            df["vix_ma5_ratio"] = (df["vix"] / df["vix"].rolling(5).mean()).shift(1)
+            df["vix_level"] = pd.cut(df["vix"].shift(1), bins=[0, 15, 20, 25, 30, 100],
                                      labels=[0, 1, 2, 3, 4]).astype(float)
 
-        # DXY 파생
+        # DXY 파생 (미국)
         if "dxy" in df.columns:
-            df["dxy_ret1d"] = df["dxy"].pct_change(1) * 100
-            df["dxy_ret1d_lag1"] = df["dxy_ret1d"].shift(1)
+            df["dxy_ret1d"] = df["dxy"].pct_change(1).shift(1) * 100
+            df["dxy_ret1d_lag2"] = df["dxy"].pct_change(1).shift(2) * 100
 
         # 미국 10년물 금리 파생
         if "us10y" in df.columns:
-            df["us10y_change"] = df["us10y"].diff()
-            df["us10y_change_lag1"] = df["us10y_change"].shift(1)
+            df["us10y_change"] = df["us10y"].diff().shift(1)
+            df["us10y_change_lag2"] = df["us10y"].diff().shift(2)
 
         return df
 
     # ── 크로스마켓 상호작용 피처 ──
 
     def _add_cross_market_features(self, df):
-        """시장 간 상관관계, 스프레드, 레짐 피처"""
+        """시장 간 상관관계, 스프레드, 레짐 피처
+
+        상관계수는 전일까지의 윈도우를 사용(shift(1))하여 누수 방지.
+        """
         kospi_ret = df["kospi_close"].pct_change()
 
-        # S&P500-코스피 롤링 상관계수 (20일)
         if "sp500" in df.columns:
             sp_ret = df["sp500"].pct_change()
-            df["corr_sp500_20d"] = kospi_ret.rolling(20).corr(sp_ret)
-            df["corr_sp500_60d"] = kospi_ret.rolling(60).corr(sp_ret)
+            df["corr_sp500_20d"] = kospi_ret.rolling(20).corr(sp_ret).shift(1)
+            df["corr_sp500_60d"] = kospi_ret.rolling(60).corr(sp_ret).shift(1)
 
-        # 나스닥-코스피 상관계수
         if "nasdaq" in df.columns:
             nq_ret = df["nasdaq"].pct_change()
-            df["corr_nasdaq_20d"] = kospi_ret.rolling(20).corr(nq_ret)
+            df["corr_nasdaq_20d"] = kospi_ret.rolling(20).corr(nq_ret).shift(1)
 
-        # USD/KRW-코스피 역상관 (환율 상승 = 코스피 약세 경향)
         if "usdkrw" in df.columns:
             krw_ret = df["usdkrw"].pct_change()
-            df["corr_usdkrw_20d"] = kospi_ret.rolling(20).corr(krw_ret)
+            df["corr_usdkrw_20d"] = kospi_ret.rolling(20).corr(krw_ret).shift(1)
 
-        # 미국 vs 아시아 모멘텀 스프레드
         if all(c in df.columns for c in ["sp500", "nikkei"]):
             sp_mom = df["sp500"].pct_change(20)
             nk_mom = df["nikkei"].pct_change(20)
-            df["us_asia_momentum_spread"] = (sp_mom - nk_mom) * 100
+            df["us_asia_momentum_spread"] = ((sp_mom - nk_mom) * 100).shift(1)
 
-        # 위험선호 지표: 구리/금 비율 대용 (구리 모멘텀)
         if "copper" in df.columns:
-            df["copper_momentum_20d"] = df["copper"].pct_change(20) * 100
+            df["copper_momentum_20d"] = (df["copper"].pct_change(20) * 100).shift(1)
 
-        # 유가-코스피 상관 (에너지 의존도)
         if "wti" in df.columns:
             wti_ret = df["wti"].pct_change()
-            df["corr_wti_20d"] = kospi_ret.rolling(20).corr(wti_ret)
+            df["corr_wti_20d"] = kospi_ret.rolling(20).corr(wti_ret).shift(1)
 
         return df
 

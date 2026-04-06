@@ -76,6 +76,8 @@ def main():
     sub.add_parser("predict", help="일일 예측 실행")
     sub.add_parser("check", help="어제 예측 정답 확인 + 가중치 업데이트")
     sub.add_parser("weekly-report", help="주간 성과 리포트")
+    sub.add_parser("retrain", help="모델 재학습 (주간)")
+    sub.add_parser("backfill", help="과거 예측 실적 소급 초기화")
 
     tn = sub.add_parser("tune", help="Optuna 하이퍼파라미터 튜닝")
     tn.add_argument("--trials", type=int, default=30)
@@ -98,6 +100,12 @@ def main():
     elif args.command == "weekly-report":
         from pipeline.predict import run_weekly_report
         run_weekly_report()
+    elif args.command == "retrain":
+        from pipeline.predict import run_retrain
+        run_retrain()
+    elif args.command == "backfill":
+        from pipeline.predict import backfill_prediction_history
+        backfill_prediction_history()
     elif args.command == "tune":
         from pipeline.optuna_tuner import run_optuna_tuning
         run_optuna_tuning(n_trials=args.trials)

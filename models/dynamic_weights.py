@@ -22,10 +22,20 @@ def load_weights():
     return None
 
 
+class _NumpyEncoder(json.JSONEncoder):
+    def default(self, obj):
+        import numpy as np
+        if isinstance(obj, (np.bool_, np.integer)):
+            return int(obj)
+        if isinstance(obj, np.floating):
+            return float(obj)
+        return super().default(obj)
+
+
 def save_weights(data):
     """동적 가중치 저장"""
     with open(WEIGHTS_PATH, "w") as f:
-        json.dump(data, f, indent=2, ensure_ascii=False)
+        json.dump(data, f, indent=2, ensure_ascii=False, cls=_NumpyEncoder)
     logger.info(f"[DynamicWeights] 저장: {WEIGHTS_PATH}")
 
 
@@ -45,8 +55,11 @@ def update_weights(individual_predictions, actual_direction, member_names):
         "correct": {},
     }
     for i, name in enumerate(member_names):
-        predicted_up = bool(individual_predictions[i])
-        record["correct"][name] = (predicted_up == actual_direction)
+        if i < len(individual_predictions):
+            predicted_up = bool(individual_predictions[i])
+            record["correct"][name] = (predicted_up == actual_direction)
+        else:
+            record["correct"][name] = False  # 기록 없는 모델은 오답 처리
 
     history.append(record)
 
