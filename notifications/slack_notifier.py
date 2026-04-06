@@ -14,24 +14,47 @@ logger = logging.getLogger(__name__)
 SLACK_WEBHOOK_URL = os.environ.get("SLACK_WEBHOOK_URL", "")
 
 
-def send_prediction_alert(result: dict):
-    """예측 결과를 슬랙으로 전송
+def _post_to_slack(text):
+    """슬랙 웹훅으로 메시지 전송 (내부 공통)"""
+    if not SLACK_WEBHOOK_URL:
+        logger.warning("[Slack] SLACK_WEBHOOK_URL 환경변수가 설정되지 않았습니다")
+        return False
 
-    Args:
-        result: run_prediction()이 반환하는 dict
-            - date, direction, predicted_return, confidence,
-              signal_valid, vix, agreement, up_vote,
-              risk_warnings, sentiment
-    """
+    try:
+        resp = requests.post(
+            SLACK_WEBHOOK_URL,
+            data=json.dumps({"text": text}),
+            headers={"Content-Type": "application/json"},
+            timeout=10,
+        )
+        if resp.status_code == 200:
+            logger.info("[Slack] 알림 전송 완료")
+            return True
+        else:
+            logger.warning(f"[Slack] 전송 실패: {resp.status_code} {resp.text}")
+            return False
+    except Exception as e:
+        logger.warning(f"[Slack] 전송 오류: {e}")
+        return False
+
+
+def send_slack_message(text):
+    """범용 슬랙 메시지 전송"""
+    return _post_to_slack(text)
+
+
+def send_prediction_alert(result: dict):
+    """예측 결과를 슬랙으로 전송"""
     date = result.get("date", "N/A")
     pred_ret = result.get("predicted_return", 0)
     confidence = result.get("confidence", 0)
     signal_valid = result.get("signal_valid", False)
     vix = result.get("vix")
-    agreement = result.get("agreement", 0)
     up_vote = result.get("up_vote", "?/?")
     sentiment = result.get("sentiment")
     warnings = result.get("risk_warnings", [])
+    regime_label = result.get("regime_label", "")
+    threshold = result.get("confidence_threshold", 65)
 
     # 방향
     if not signal_valid:
@@ -41,7 +64,6 @@ def send_prediction_alert(result: dict):
     else:
         direction_str = "▼ 하락"
 
-    # 등락률 부호
     sign = "+" if pred_ret > 0 else ""
 
     # VIX
@@ -69,12 +91,12 @@ def send_prediction_alert(result: dict):
     else:
         status_line = "⚠️ 리스크 필터 발동"
 
-    # 메시지 조립
     text = (
         f"📊 *[{date}] 코스피 예측*\n\n"
+        f"레짐: {regime_label}\n"
         f"방향: *{direction_str}*\n"
         f"예측 등락률: *{sign}{pred_ret:.2f}%*\n"
-        f"신뢰도: {confidence:.1f}%\n"
+        f"신뢰도: {confidence:.1f}% (임계 {threshold:.0f}%)\n"
         f"모델 합의: {up_vote}\n"
         f"VIX: {vix_str}\n"
         f"감성: {sent_str}\n\n"
@@ -84,22 +106,4 @@ def send_prediction_alert(result: dict):
     if warnings:
         text += "\n" + "\n".join(warnings)
 
-    payload = {"text": text}
-
-    if not SLACK_WEBHOOK_URL:
-        logger.warning("[Slack] SLACK_WEBHOOK_URL 환경변수가 설정되지 않았습니다")
-        return
-
-    try:
-        resp = requests.post(
-            SLACK_WEBHOOK_URL,
-            data=json.dumps(payload),
-            headers={"Content-Type": "application/json"},
-            timeout=10,
-        )
-        if resp.status_code == 200:
-            logger.info("[Slack] 알림 전송 완료")
-        else:
-            logger.warning(f"[Slack] 전송 실패: {resp.status_code} {resp.text}")
-    except Exception as e:
-        logger.warning(f"[Slack] 전송 오류: {e}")
+    return _post_to_slack(text)

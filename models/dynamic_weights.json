@@ -1,0 +1,28 @@
+{
+  "history": [
+    {
+      "correct": {
+        "attention_42": true,
+        "attention_123": true,
+        "attention_777": true,
+        "baseline_42": true,
+        "baseline_123": true,
+        "cnn_42": true,
+        "cnn_123": true,
+        "transformer_42": true,
+        "transformer_123": true
+      }
+    }
+  ],
+  "weights": {
+    "attention_42": 1.0,
+    "attention_123": 1.0,
+    "attention_777": 1.0,
+    "baseline_42": 1.0,
+    "baseline_123": 1.0,
+    "cnn_42": 1.0,
+    "cnn_123": 1.0,
+    "transformer_42": 1.0,
+    "transformer_123": 1.0
+  }
+}
