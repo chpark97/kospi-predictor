@@ -22,8 +22,8 @@ DANGER_KEYWORDS = [
 ]
 
 # 주의 레벨
-CAUTION_THRESHOLD = 5    # 🟡 주의
-DANGER_THRESHOLD = 15    # 🔴 위험
+CAUTION_THRESHOLD = 5    # 주의
+DANGER_THRESHOLD = 15    # 위험
 
 RSS_FEEDS = [
     "https://www.hankyung.com/feed/finance",
@@ -36,16 +36,18 @@ def check_geopolitical_risk():
     """지정학적 리스크 감지
 
     Returns:
-        (risk_level, details): "safe"/"caution"/"danger", 상세 정보 dict
+        (risk_level, details): "safe"/"caution"/"danger"/"unknown", 상세 정보 dict
     """
     session = requests.Session()
     session.headers.update({"User-Agent": "Mozilla/5.0"})
 
     all_titles = []
+    feed_errors = 0
     for url in RSS_FEEDS:
         try:
             resp = session.get(url, timeout=10)
             if resp.status_code != 200:
+                feed_errors += 1
                 continue
             root = ET.fromstring(resp.content)
             for item in root.findall(".//item"):
@@ -55,10 +57,18 @@ def check_geopolitical_risk():
                     if len(t) > 3:
                         all_titles.append(t)
         except Exception:
+            feed_errors += 1
             continue
 
+    # 뉴스 수집 실패 시 "unknown" 반환 (기존: "safe" → 위기시 필터 무력화 문제)
     if not all_titles:
-        return "safe", {"keyword_count": 0, "keywords_found": [], "news_count": 0}
+        logger.warning(f"[GeoRisk] 뉴스 수집 실패 ({feed_errors}/{len(RSS_FEEDS)} 피드 오류)")
+        return "unknown", {
+            "keyword_count": 0,
+            "keywords_found": [],
+            "news_count": 0,
+            "reason": f"뉴스 수집 실패 ({feed_errors}개 피드 오류)",
+        }
 
     # 위험 키워드 검색
     found_keywords = {}
@@ -95,6 +105,13 @@ def format_geo_alert(level, details):
     """슬랙용 긴급 알림 포맷"""
     if level == "safe":
         return None
+
+    if level == "unknown":
+        return (
+            "⚠ *[경고] 뉴스 수집 실패*\n"
+            f"사유: {details.get('reason', '알 수 없음')}\n"
+            "→ 보수적 운영 모드 적용 (임계값 +10%)"
+        )
 
     icon = "🟡" if level == "caution" else "🚨"
     label = "주의" if level == "caution" else "긴급"
