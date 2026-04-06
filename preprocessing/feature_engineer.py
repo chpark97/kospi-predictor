@@ -168,8 +168,7 @@ class FeatureEngineer:
         low = df["kospi_low"]
         volume = df["kospi_volume"]
 
-        # RSI (7일, 14일)
-        df["rsi_7"] = self._calc_rsi(close, 7)
+        # RSI (14일만 유지 — rsi_7은 rsi_14와 높은 상관)
         df["rsi_14"] = self._calc_rsi(close, 14)
 
         # MACD
@@ -185,11 +184,10 @@ class FeatureEngineer:
         df["bb_width"] = (4 * std20) / sma20
         df["bb_position"] = (close - (sma20 - 2 * std20)) / (4 * std20)
 
-        # 스토캐스틱 (14, 3)
+        # 스토캐스틱 (14) — stoch_d 제거 (stoch_k와 중복)
         low14 = low.rolling(14).min()
         high14 = high.rolling(14).max()
         df["stoch_k"] = (close - low14) / (high14 - low14) * 100
-        df["stoch_d"] = df["stoch_k"].rolling(3).mean()
 
         # ATR (Average True Range, 14일)
         tr = pd.concat([
@@ -199,23 +197,14 @@ class FeatureEngineer:
         ], axis=1).max(axis=1)
         df["atr_14"] = tr.rolling(14).mean() / close * 100  # % 단위
 
-        # CCI (Commodity Channel Index, 20일)
-        typical_price = (high + low + close) / 3
-        sma_tp = typical_price.rolling(20).mean()
-        mad = typical_price.rolling(20).apply(lambda x: np.abs(x - x.mean()).mean())
-        df["cci_20"] = (typical_price - sma_tp) / (0.015 * mad)
-
-        # Williams %R (14일)
-        df["williams_r"] = (high14 - close) / (high14 - low14) * -100
+        # CCI, Williams %R 제거 (rsi_14, stoch_k와 중복 정보)
 
         # OBV (On-Balance Volume) 변화율
         obv = (np.sign(close.diff()) * volume).fillna(0).cumsum()
         df["obv_change"] = obv.pct_change(5)
 
-        # 캔들스틱 패턴 피처
+        # 캔들스틱 패턴 피처 (upper/lower shadow 제거 — candle_body만 유지)
         df["candle_body"] = (close - df["kospi_open"]) / df["kospi_open"] * 100
-        df["upper_shadow"] = (high - pd.concat([close, df["kospi_open"]], axis=1).max(axis=1)) / close * 100
-        df["lower_shadow"] = (pd.concat([close, df["kospi_open"]], axis=1).min(axis=1) - low) / close * 100
 
         return df
 
@@ -236,31 +225,23 @@ class FeatureEngineer:
                 continue
 
             ret1d = df[col].pct_change(1) * 100
-            ret5d = df[col].pct_change(5) * 100
 
-            # 모든 수익률에 shift(1) 적용 — 전일 데이터만 사용
+            # ret1d만 유지 (ret5d, lag2 제거 — ret1d로 충분)
             df[f"{col}_ret1d"] = ret1d.shift(1)
-            df[f"{col}_ret5d"] = ret5d.shift(1)
-            # lag2도 추가 (이틀 전)
-            df[f"{col}_ret1d_lag2"] = ret1d.shift(2)
 
-        # VIX 파생 피처 (VIX도 미국 시장이므로 shift 필요)
+        # VIX 파생 피처 (ret5d, ma5_ratio 제거)
         if "vix" in df.columns:
             df["vix_ret1d"] = df["vix"].pct_change(1).shift(1) * 100
-            df["vix_ret5d"] = df["vix"].pct_change(5).shift(1) * 100
-            df["vix_ma5_ratio"] = (df["vix"] / df["vix"].rolling(5).mean()).shift(1)
             df["vix_level"] = pd.cut(df["vix"].shift(1), bins=[0, 15, 20, 25, 30, 100],
                                      labels=[0, 1, 2, 3, 4]).astype(float)
 
-        # DXY 파생 (미국)
+        # DXY 파생 (lag2 제거)
         if "dxy" in df.columns:
             df["dxy_ret1d"] = df["dxy"].pct_change(1).shift(1) * 100
-            df["dxy_ret1d_lag2"] = df["dxy"].pct_change(1).shift(2) * 100
 
-        # 미국 10년물 금리 파생
+        # 미국 10년물 금리 파생 (lag2 제거)
         if "us10y" in df.columns:
             df["us10y_change"] = df["us10y"].diff().shift(1)
-            df["us10y_change_lag2"] = df["us10y"].diff().shift(2)
 
         return df
 
@@ -273,30 +254,13 @@ class FeatureEngineer:
         """
         kospi_ret = df["kospi_close"].pct_change()
 
+        # corr_sp500_20d만 유지 (60d, nasdaq, usdkrw, wti 상관계수, momentum_spread 제거)
         if "sp500" in df.columns:
             sp_ret = df["sp500"].pct_change()
             df["corr_sp500_20d"] = kospi_ret.rolling(20).corr(sp_ret).shift(1)
-            df["corr_sp500_60d"] = kospi_ret.rolling(60).corr(sp_ret).shift(1)
-
-        if "nasdaq" in df.columns:
-            nq_ret = df["nasdaq"].pct_change()
-            df["corr_nasdaq_20d"] = kospi_ret.rolling(20).corr(nq_ret).shift(1)
-
-        if "usdkrw" in df.columns:
-            krw_ret = df["usdkrw"].pct_change()
-            df["corr_usdkrw_20d"] = kospi_ret.rolling(20).corr(krw_ret).shift(1)
-
-        if all(c in df.columns for c in ["sp500", "nikkei"]):
-            sp_mom = df["sp500"].pct_change(20)
-            nk_mom = df["nikkei"].pct_change(20)
-            df["us_asia_momentum_spread"] = ((sp_mom - nk_mom) * 100).shift(1)
 
         if "copper" in df.columns:
             df["copper_momentum_20d"] = (df["copper"].pct_change(20) * 100).shift(1)
-
-        if "wti" in df.columns:
-            wti_ret = df["wti"].pct_change()
-            df["corr_wti_20d"] = kospi_ret.rolling(20).corr(wti_ret).shift(1)
 
         return df
 
@@ -316,36 +280,20 @@ class FeatureEngineer:
         df["month_sin"] = np.sin(2 * np.pi * month / 12)
         df["month_cos"] = np.cos(2 * np.pi * month / 12)
 
-        # 월초/월말 효과 (영업일 기준 근사)
-        df["is_month_start"] = (dates.dt.day <= 3).astype(float)
-        df["is_month_end"] = (dates.dt.day >= 27).astype(float)
-
-        # 분기말
-        df["is_quarter_end"] = ((dates.dt.month % 3 == 0) & (dates.dt.day >= 25)).astype(float)
+        # is_month_start, is_month_end, is_quarter_end 제거 (sin/cos로 충분)
 
         return df
 
     # ── 외국인/기관 매매동향 피처 ──
 
     def _add_investor_features(self, df):
-        """외국인/기관 순매수 파생 피처"""
+        """외국인/기관 순매수 파생 피처 (cum5만 유지, ma/direction/consec 제거)"""
         for col in ["foreign_net", "inst_net"]:
             if col not in df.columns or df[col].abs().sum() == 0:
                 continue
 
-            # 5일, 20일 이동평균
-            df[f"{col}_ma5"] = df[col].rolling(5).mean()
-            df[f"{col}_ma20"] = df[col].rolling(20).mean()
-
-            # 누적 순매수 방향 (5일)
+            # 누적 순매수 (5일)만 유지
             df[f"{col}_cum5"] = df[col].rolling(5).sum()
-            df[f"{col}_direction"] = (df[f"{col}_cum5"] > 0).astype(float)
-
-            # 연속 순매수/순매도 일수
-            is_buy = (df[col] > 0).astype(int)
-            df[f"{col}_consec_buy"] = is_buy * (
-                is_buy.groupby((is_buy != is_buy.shift()).cumsum()).cumcount() + 1
-            )
 
         return df
 
@@ -358,18 +306,11 @@ class FeatureEngineer:
 
         sent = df["sentiment_score"]
 
-        # 3일, 5일 이동평균
-        df["sentiment_ma3"] = sent.rolling(3).mean()
+        # sentiment_ma5만 유지 (ma3, sentiment_level 제거)
         df["sentiment_ma5"] = sent.rolling(5).mean()
 
         # 감성 변화율
         df["sentiment_change"] = sent.diff()
-
-        # 감성 레벨 (강한 부정/부정/중립/긍정/강한 긍정)
-        df["sentiment_level"] = pd.cut(
-            sent, bins=[-1.1, -0.5, -0.1, 0.1, 0.5, 1.1],
-            labels=[-2, -1, 0, 1, 2]
-        ).astype(float)
 
         return df
 
@@ -425,8 +366,8 @@ class FeatureEngineer:
     def _add_derived_features(self, df):
         close = df["kospi_close"]
 
-        # 이동평균 비율 (5, 10, 20, 60, 120일)
-        for period in [5, 10, 20, 60, 120]:
+        # 이동평균 비율 (20, 60일만 유지 — 5, 10, 120 제거)
+        for period in [20, 60]:
             ma = close.rolling(period).mean()
             df[f"ma_{period}_ratio"] = close / ma
 
@@ -437,30 +378,21 @@ class FeatureEngineer:
         df["ma5_above_ma20"] = (ma5 > ma20).astype(float)
         df["ma20_above_ma60"] = (ma20 > ma60).astype(float)
 
-        # 수익률 (1, 2, 3, 5, 10, 20일)
-        for period in [1, 2, 3, 5, 10, 20]:
+        # 수익률 (1, 5, 20일만 유지 — 2d, 3d, 10d 제거)
+        for period in [1, 5, 20]:
             df[f"return_{period}d"] = close.pct_change(period) * 100
 
-        # 연속 상승/하락 카운트
-        daily_ret = close.pct_change()
-        up = (daily_ret > 0).astype(int)
-        down = (daily_ret < 0).astype(int)
-        # 연속 상승일수
-        df["consec_up"] = up * (up.groupby((up != up.shift()).cumsum()).cumcount() + 1)
-        df["consec_down"] = down * (down.groupby((down != down.shift()).cumsum()).cumcount() + 1)
+        # consec_up, consec_down 제거
 
-        # 거래량 피처
-        df["volume_change"] = df["kospi_volume"].pct_change()
+        # 거래량 피처 (volume_ma5_ratio만 유지)
         df["volume_ma5_ratio"] = df["kospi_volume"] / df["kospi_volume"].rolling(5).mean()
-        df["volume_ma20_ratio"] = df["kospi_volume"] / df["kospi_volume"].rolling(20).mean()
 
-        # 변동성 (10, 20, 60일)
+        # 변동성 (20일만 유지, vol_ratio는 내부 계산용으로 10d/60d 임시 생성)
         daily_pct = close.pct_change()
-        for period in [10, 20, 60]:
-            df[f"volatility_{period}d"] = daily_pct.rolling(period).std() * np.sqrt(252) * 100
-
-        # 변동성 비율 (단기/장기) - 변동성 레짐 전환 감지
-        df["vol_ratio_10_60"] = df["volatility_10d"] / df["volatility_60d"]
+        df["volatility_20d"] = daily_pct.rolling(20).std() * np.sqrt(252) * 100
+        vol_10d = daily_pct.rolling(10).std() * np.sqrt(252) * 100
+        vol_60d = daily_pct.rolling(60).std() * np.sqrt(252) * 100
+        df["vol_ratio_10_60"] = vol_10d / vol_60d
 
         # 고저 비율 (당일 변동 범위)
         df["hl_ratio"] = (df["kospi_high"] - df["kospi_low"]) / close * 100
@@ -476,10 +408,7 @@ class FeatureEngineer:
         ma25 = close.rolling(25).mean()
         df["weekly_ma_trend"] = (ma25 - ma25.shift(5)) / ma25.shift(5) * 100
 
-        # 월간 vs 일간 변동성 비율
-        vol_daily = daily_pct.rolling(5).std() * np.sqrt(252) * 100
-        vol_monthly = daily_pct.rolling(60).std() * np.sqrt(252) * 100
-        df["vol_daily_monthly_ratio"] = vol_daily / vol_monthly.replace(0, np.nan)
+        # vol_daily_monthly_ratio 제거
 
         return df
 
