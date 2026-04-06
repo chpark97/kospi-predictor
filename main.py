@@ -98,12 +98,26 @@ def main():
     # verify 명령
     subparsers.add_parser("verify", help="DB 현황 확인")
 
+    # train 명령
+    train_parser = subparsers.add_parser("train", help="모델 학습 (Walk-forward)")
+    train_parser.add_argument("--model", default="attention", choices=["baseline", "attention"],
+                              help="모델 타입 (baseline: LSTM, attention: LSTM+Attention)")
+
+    # predict 명령
+    subparsers.add_parser("predict", help="일일 예측 실행")
+
     args = parser.parse_args()
 
     if args.command == "collect":
         collect_data(start_date=args.start, end_date=args.end)
     elif args.command == "verify":
         verify_database()
+    elif args.command == "train":
+        from pipeline.train import walk_forward_train
+        walk_forward_train(args.model)
+    elif args.command == "predict":
+        from pipeline.predict import run_prediction
+        run_prediction()
     else:
         parser.print_help()
 
