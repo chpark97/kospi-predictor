@@ -18,6 +18,7 @@ from models.ensemble import ENSEMBLE_MEMBERS, EnsemblePredictor, create_model
 from preprocessing.feature_engineer import FeatureEngineer
 from evaluation.backtest import evaluate_predictions
 from pipeline.optuna_tuner import load_best_params
+from pipeline.feature_selection import rank_features_by_importance, select_top_features
 
 logger = logging.getLogger(__name__)
 
@@ -181,6 +182,63 @@ def train_single_model(model, train_loader, val_loader, epochs=None, lr=None,
     return model, best_val_loss, best_val_da
 
 
+def _compute_feature_selection(X_train, y_train, feature_names, target_count=40):
+    """Train 데이터만 사용하여 피처 선택 (미래 누수 방지)
+
+    Returns:
+        selected_indices: 선택된 피처 인덱스 리스트
+        keep_names: 유지할 피처 이름 리스트
+    """
+    num_features = X_train.shape[2]
+    seq_length = X_train.shape[1]
+
+    # 빠른 피처 선택을 위해 간단한 baseline 모델로 학습
+    quick_model = create_model("baseline", num_features, seq_length)
+
+    # 짧은 학습으로 최소한의 피처 관계 학습
+    val_size = max(int(len(X_train) * 0.15), 1)
+    train_ds = TensorDataset(
+        torch.FloatTensor(X_train[:-val_size]),
+        torch.FloatTensor(y_train[:-val_size])
+    )
+    val_ds = TensorDataset(
+        torch.FloatTensor(X_train[-val_size:]),
+        torch.FloatTensor(y_train[-val_size:])
+    )
+    train_loader = DataLoader(train_ds, batch_size=BATCH_SIZE, shuffle=True, drop_last=True)
+    val_loader = DataLoader(val_ds, batch_size=BATCH_SIZE)
+
+    # 빠른 학습 (20 에폭)
+    quick_model, _, _ = train_single_model(
+        quick_model, train_loader, val_loader,
+        epochs=20, patience=10, min_epochs=10
+    )
+
+    # EnsemblePredictor로 감싸서 importance 계산
+    quick_ensemble = EnsemblePredictor()
+    quick_ensemble.add_model(quick_model, 1.0, "baseline")
+
+    # train 데이터로 피처 중요도 계산
+    ranked = rank_features_by_importance(
+        quick_ensemble, X_train, feature_names, n_samples=min(100, len(X_train))
+    )
+
+    # 상위 피처 선택
+    keep_names, remove_names = select_top_features(ranked, target_count=target_count)
+
+    # 선택된 피처의 인덱스 계산
+    selected_indices = [i for i, name in enumerate(feature_names) if name in keep_names]
+
+    logger.info(f"피처 선택 완료: {num_features}개 → {len(selected_indices)}개")
+
+    return selected_indices, keep_names
+
+
+def _apply_feature_selection(X, selected_indices):
+    """선택된 피처 인덱스만 추출"""
+    return X[:, :, selected_indices]
+
+
 def walk_forward_ensemble():
     """앙상블 Walk-forward validation"""
     # Optuna 최적 파라미터 로드
@@ -195,6 +253,9 @@ def walk_forward_ensemble():
 
     SAVE_DIR.mkdir(parents=True, exist_ok=True)
     all_results = []
+
+    # 피처 선택 결과 저장 (최종 앙상블에 재사용)
+    global_selected_indices = None
 
     for i, split in enumerate(WALK_FORWARD_SPLITS):
         train_end = split["train_end"]
@@ -219,6 +280,16 @@ def walk_forward_ensemble():
 
         if len(X_test) < 10:
             continue
+
+        # ── 피처 선택 (train 데이터만 사용) ──
+        selected_indices, keep_names = _compute_feature_selection(
+            X_train, y_train, fe.feature_names, target_count=40
+        )
+        global_selected_indices = selected_indices  # 마지막 split 결과를 최종 앙상블에 사용
+
+        # 선택된 피처만 사용
+        X_train = _apply_feature_selection(X_train, selected_indices)
+        X_test = _apply_feature_selection(X_test, selected_indices)
 
         val_size = max(int(len(X_train) * 0.15), 1)
         X_tr, y_tr = X_train[:-val_size], y_train[:-val_size]
@@ -293,6 +364,7 @@ def walk_forward_ensemble():
             "seq_length": seq_length,
             "split": split,
             "metrics": metrics,
+            "selected_feature_indices": selected_indices,
         }, save_path)
         logger.info(f"  앙상블 저장: {save_path}")
 
@@ -319,6 +391,16 @@ def walk_forward_ensemble():
     # ── 최종 앙상블: 전체 데이터로 재학습 ──
     logger.info(f"\n최종 앙상블 학습 (전체 데이터)...")
     X_all, y_all, _, scaler = fe.prepare_sequences(df, fit_scaler=True)
+
+    # 피처 선택 적용 (walk-forward에서 계산된 인덱스 사용, 없으면 새로 계산)
+    if global_selected_indices is None:
+        global_selected_indices, _ = _compute_feature_selection(
+            X_all, y_all, fe.feature_names, target_count=40
+        )
+
+    X_all = _apply_feature_selection(X_all, global_selected_indices)
+    logger.info(f"최종 앙상블 피처 수: {X_all.shape[2]}개 (선택됨)")
+
     val_size = max(int(len(X_all) * 0.1), 1)
     X_tr, y_tr = X_all[:-val_size], y_all[:-val_size]
     X_val, y_val = X_all[-val_size:], y_all[-val_size:]
@@ -362,8 +444,10 @@ def walk_forward_ensemble():
         "feature_names": fe.feature_names,
         "num_features": num_features,
         "seq_length": seq_length,
+        "selected_feature_indices": global_selected_indices,
     }, final_path)
     logger.info(f"최종 앙상블 저장: {final_path}")
+    logger.info(f"  선택된 피처 인덱스 저장: {len(global_selected_indices)}개")
 
     return all_results
 
