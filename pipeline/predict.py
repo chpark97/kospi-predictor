@@ -140,6 +140,7 @@ def compute_composite_confidence(details, regime, prediction_history=None):
     """개선된 복합 신뢰도 — 4개 지표의 가중 합산
 
     각 지표가 20~90% 범위를 커버하도록 스케일링 조정.
+    상승 편향 감지 시 강제 신뢰도 패널티 적용.
     """
     all_returns = details["individual_returns"]
     individual_rets = all_returns[:, 0]
@@ -150,6 +151,13 @@ def compute_composite_confidence(details, regime, prediction_history=None):
     up_vote_ratio = details["up_vote_ratio"][0]
     raw_agreement = abs(up_vote_ratio - 0.5) * 2  # 0~1
     agreement_score = raw_agreement ** 0.6 * 100   # 비선형: 5:4→18, 6:3→53, 7:2→72, 8:1→87, 9:0→100
+
+    # 상승 편향 패널티: up_ratio > 0.8이면 합의도 점수 감쇄
+    # 전부 상승 예측(up_ratio=1.0)은 "합의"가 아니라 "편향"일 가능성
+    if up_vote_ratio > 0.8:
+        bias_penalty = (up_vote_ratio - 0.8) * 2.5  # 0.8→0, 1.0→0.5
+        agreement_score *= (1 - bias_penalty)
+        logger.debug(f"  상승 편향 패널티: up_ratio={up_vote_ratio:.2f} → 합의도 {bias_penalty:.0%} 감쇄")
 
     # 2. 예측 강도 (0~100)
     # 실제 예측값 분포(0.04~0.3%)에 맞게 분모 조정
@@ -224,8 +232,10 @@ def _compute_accuracy_score(predicted_up, prediction_history):
     if recent_acc is not None and n_days >= 5:
         return recent_acc
 
-    # 데이터 없음 → 중립 (변별력 없는 값이지만 불가피)
-    return 50.0
+    # 데이터 없음 → 보수적 운영 (기존 50.0에서 35.0으로 하향)
+    # 신뢰할 데이터가 없을 때 bull 레짐 임계값(50%) 미만으로 설정하여
+    # 리스크 필터가 작동하도록 함
+    return 35.0
 
 
 # ── 일일 예측 ──

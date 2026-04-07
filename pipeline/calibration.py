@@ -31,7 +31,7 @@ def detect_bias(prediction_history, window=30):
     verified = [h for h in recent if h.get("actual_direction")]
     actual_up = sum(1 for h in verified if h["actual_direction"] == "up") / len(verified) if verified else 0.5
 
-    is_biased = up_ratio > 0.65  # 65% 초과면 편향
+    is_biased = up_ratio > 0.55  # 55% 초과면 편향 (기존 0.65에서 하향)
     msg = None
 
     if is_biased:
@@ -60,18 +60,21 @@ def calibrate_prediction(pred_return, individual_returns, prediction_history):
     if not is_biased:
         return pred_return, individual_returns, None
 
-    # 오프셋 계산: 예측 편향도 × 개별 예측 분산
-    # up_ratio=0.8, actual_up=0.5 → bias_gap=0.3
-    bias_gap = up_ratio - actual_up
+    # 오프셋 계산: 예측값 대비 비율 기반으로 부호 전환 가능하도록 개선
+    # 기존: bias_gap * spread → 예측값(0.04~0.30%)보다 오프셋이 작아 부호 전환 불가
+    # 개선: 예측값 절대값 대비 비율 기반으로 오프셋 계산
+    bias_gap = up_ratio - actual_up  # up_ratio=0.8, actual_up=0.5 → bias_gap=0.3
 
-    # 개별 모델 예측의 표준편차를 기반으로 오프셋 크기 결정
     individual_rets = individual_returns[:, 0] if individual_returns.ndim > 1 else individual_returns
-    spread = np.std(individual_rets)
-    offset = bias_gap * max(spread, 0.05)  # 최소 spread 보장
 
-    # 추가 임계값 보정: 편향이 극심하면 더 강하게 보정
-    # up_ratio=0.8 → threshold_adj=0.125, up_ratio=0.97 → threshold_adj=0.21
-    threshold_adj = (up_ratio - 0.55) * 0.5
+    # 오프셋을 예측값 절대값의 배수로 계산 (부호 전환 가능)
+    # bias_gap=0.3 → multiplier=0.6, bias_gap=0.5 → multiplier=1.0
+    pred_abs = abs(pred_return)
+    multiplier = bias_gap * 2  # bias_gap 30%면 예측값의 60%를 오프셋으로
+    offset = pred_abs * multiplier
+
+    # 추가 임계값 보정: 편향이 극심하면(up_ratio > 0.8) 더 강하게 보정
+    threshold_adj = max(0, (up_ratio - 0.7)) * pred_abs  # 70% 초과분만 추가
 
     total_offset = offset + threshold_adj
 

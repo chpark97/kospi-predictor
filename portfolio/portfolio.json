@@ -1,22 +1,15 @@
 {
-  "capital": 0,
+  "capital": 100000000,
   "initial_capital": 100000000,
-  "position": "long",
-  "entry_price": 5377.2998046875,
-  "entry_date": "2026-04-06",
-  "invested_amount": 99985000,
+  "position": "cash",
+  "entry_price": null,
+  "entry_date": null,
+  "invested_amount": 0,
   "sizing_ratio": 1.0,
   "hold_days": 0,
-  "trades": [
-    {
-      "date": "2026-04-06",
-      "action": "buy",
-      "price": 5377.2998046875,
-      "exit_reason": null
-    }
-  ],
+  "trades": [],
   "wins": 0,
   "losses": 0,
   "peak_capital": 100000000,
-  "max_drawdown": -0.01
+  "max_drawdown": 0.0
 }

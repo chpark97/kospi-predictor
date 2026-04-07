@@ -113,7 +113,8 @@ def train_single_model(model, train_loader, val_loader, epochs=None, lr=None,
         all_y.append(y_b)
     all_y_cat = torch.cat(all_y)
     pos_w = _compute_class_weight(all_y_cat.numpy())
-    if pos_w and abs(pos_w - 1.0) > 0.1:
+    # 조건 완화: 0.1 → 0.05 (상승일 54% → pos_weight≈0.85 → 이제 적용됨)
+    if pos_w and abs(pos_w - 1.0) > 0.05:
         logger.debug(f"    클래스 가중치: pos_weight={pos_w:.2f}")
 
     criterion = DirectionalLoss(pos_weight=pos_w)
