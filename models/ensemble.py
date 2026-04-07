@@ -4,8 +4,11 @@
 1. 아키텍처 다양성: LSTM, LSTM+Attention, 1D-CNN, Transformer, TFT
 2. 시드 다양성: 동일 아키텍처를 다른 시드로 학습
 3. 가중 투표: validation 성능 기반 가중치 부여
+4. 적응적 방향 판단: 최근 예측 평균을 빼서 상승 편향 제거
 """
+import json
 import logging
+from pathlib import Path
 
 import numpy as np
 import torch
@@ -57,6 +60,8 @@ def create_model(model_type, num_features, seq_length=20):
 class EnsemblePredictor:
     """학습된 앙상블 모델들의 예측을 결합"""
 
+    BIAS_STATE_PATH = Path(__file__).parent.parent / "data" / "ensemble_bias_state.json"
+
     def __init__(self):
         self.models = []       # (model, weight, model_type)
         self.scaler = None
@@ -65,8 +70,43 @@ class EnsemblePredictor:
         model.eval()
         self.models.append((model, weight, model_type))
 
+    def _load_bias_state(self):
+        """최근 예측값의 rolling mean을 로드 (적응적 임계값용)"""
+        if self.BIAS_STATE_PATH.exists():
+            with open(self.BIAS_STATE_PATH) as f:
+                return json.load(f)
+        return {"recent_preds": []}
+
+    def _save_bias_state(self, state):
+        """bias state 저장"""
+        self.BIAS_STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
+        with open(self.BIAS_STATE_PATH, "w") as f:
+            json.dump(state, f)
+
+    def _get_adaptive_threshold(self):
+        """최근 30일 예측 평균을 적응적 임계값으로 반환
+
+        모델이 항상 +0.1% 근처를 출력하면, 0이 아닌 +0.1%를 기준으로
+        상승/하락을 판단해야 편향이 제거됨.
+        """
+        state = self._load_bias_state()
+        recent = state.get("recent_preds", [])
+        if len(recent) < 5:
+            return 0.0
+        # 최근 30일 예측의 중앙값을 임계값으로 사용
+        threshold = float(np.median(recent[-30:]))
+        return threshold
+
+    def update_bias_state(self, pred_return_scalar):
+        """새 예측값을 bias state에 추가"""
+        state = self._load_bias_state()
+        recent = state.get("recent_preds", [])
+        recent.append(float(pred_return_scalar))
+        state["recent_preds"] = recent[-60:]  # 최근 60일만 유지
+        self._save_bias_state(state)
+
     def predict(self, X):
-        """가중 앙상블 예측"""
+        """가중 앙상블 예측 (적응적 방향 판단 포함)"""
         if not self.models:
             raise ValueError("앙상블에 모델이 없습니다")
 
@@ -90,7 +130,10 @@ class EnsemblePredictor:
 
         pred_return = np.average(all_returns, axis=0, weights=weights)
 
-        directions = (all_returns > 0).astype(float)
+        # 적응적 임계값: 최근 예측 평균을 빼서 방향 판단
+        # 모델이 항상 양수를 출력하면, 평균 이상/이하로 상승/하락을 구분
+        adaptive_threshold = self._get_adaptive_threshold()
+        directions = (all_returns > adaptive_threshold).astype(float)
         up_vote_ratio = np.average(directions, axis=0, weights=weights)
         agreement = np.abs(up_vote_ratio - 0.5) * 2
 
@@ -103,6 +146,13 @@ class EnsemblePredictor:
             "up_vote_ratio": up_vote_ratio,
             "agreement": agreement,
             "weights": weights,
+            "adaptive_threshold": adaptive_threshold,
         }
+
+        if adaptive_threshold != 0.0:
+            logger.info(
+                f"  적응적 임계값: {adaptive_threshold:+.4f}% "
+                f"(threshold 이상={up_vote_ratio[0]:.0%})"
+            )
 
         return pred_return, confidence, details

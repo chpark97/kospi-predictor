@@ -308,6 +308,9 @@ def run_prediction():
     pred_return, _, details = ensemble.predict(X[-1:])
     pred_return = pred_return[0]
 
+    # 5-0. 적응적 임계값 bias state 업데이트
+    ensemble.update_bias_state(float(pred_return))
+
     # 5-1. 캘리브레이션 (상승 편향 제거)
     from pipeline.calibration import calibrate_prediction
     history = _load_prediction_history()
@@ -317,6 +320,8 @@ def run_prediction():
     if cal_individual is not None:
         details["individual_returns"] = cal_individual
 
+    # 방향 판단: 캘리브레이션 이후에는 0 기준 (이미 de-bias 됨)
+    # 적응적 임계값은 ensemble.predict() 내부의 투표 합의도에만 사용
     individual_dirs = details["individual_returns"][:, 0] > 0
     up_count = individual_dirs.sum()
     total_models = len(individual_dirs)
@@ -649,15 +654,20 @@ def backfill_prediction_history():
         if dates_all[i] in existing:
             continue
         pred_ret, _, details = ensemble.predict(X_all[i:i+1])
-        dirs = list(details["individual_returns"][:, 0] > 0)
+        # 적응적 임계값으로 방향 판단 + bias state 업데이트
+        adaptive_threshold = details.get("adaptive_threshold", 0.0)
+        dirs = list(details["individual_returns"][:, 0] > adaptive_threshold)
+        ensemble.update_bias_state(float(pred_ret[0]))
         actual_up = y_all[i] > 0
 
         # 실제 신뢰도 계산 (기존 히스토리를 prediction_history로 전달)
         confidence = compute_composite_confidence(details, regime, history)
 
+        # 방향 판단: 적응적 임계값 이상이면 상승
+        predicted_up = pred_ret[0] > adaptive_threshold
         history.append({
             "date": dates_all[i],
-            "predicted_direction": "up" if pred_ret[0] > 0 else "down",
+            "predicted_direction": "up" if predicted_up else "down",
             "predicted_return": round(float(pred_ret[0]), 4),
             "confidence": round(confidence, 1),
             "signal_valid": True,

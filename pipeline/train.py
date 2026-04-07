@@ -25,12 +25,18 @@ SAVE_DIR = Path(__file__).parent.parent / "saved_models"
 
 
 class DirectionalLoss(nn.Module):
-    """MSE + 방향 BCE(클래스 가중치 적용) + 확신도 BCE 커스텀 손실"""
+    """방향 BCE 중심 + MSE 보조 + 확신도 BCE 커스텀 손실
 
-    def __init__(self, direction_weight=0.5, confidence_weight=0.3, pos_weight=None):
+    기존 문제: MSE 가중치=1.0이 지배적 → 주가의 양수 드리프트를 학습해 항상 상승 예측
+    개선: 방향 BCE를 주 손실로(1.0), MSE를 보조(0.3)로 → 방향 정확도 우선 최적화
+    """
+
+    def __init__(self, direction_weight=1.0, mse_weight=0.3, confidence_weight=0.3,
+                 pos_weight=None):
         super().__init__()
         self.mse = nn.MSELoss()
         self.dw = direction_weight
+        self.mw = mse_weight
         self.cw = confidence_weight
         # 클래스 불균형 보정: 하락일이 적으면 하락 맞추는 데 더 큰 가중치
         if pos_weight is not None:
@@ -56,7 +62,7 @@ class DirectionalLoss(nn.Module):
             correct = (true_dir == pred_dir).float()
         loss_conf = self.bce_conf(confidence, correct)
 
-        return loss_mse + self.dw * loss_dir + self.cw * loss_conf
+        return self.mw * loss_mse + self.dw * loss_dir + self.cw * loss_conf
 
 
 def _compute_class_weight(y):

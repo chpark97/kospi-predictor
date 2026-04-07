@@ -45,42 +45,39 @@ def detect_bias(prediction_history, window=30):
 
 
 def calibrate_prediction(pred_return, individual_returns, prediction_history):
-    """편향 감지 시 오프셋 기반으로 예측 등락률을 보정
+    """편향 감지 시 분위수 기반으로 예측 등락률을 보정
 
-    기존 scale 방식의 문제:
-      pred_return * scale → 양수에 양수를 곱하면 여전히 양수 (방향 불변)
+    핵심: 예측 상승 비율(97%)을 실제 상승 비율(60%)에 맞추는 오프셋 계산.
+    최근 예측값의 (1-실제상승비율) 분위수를 빼면,
+    보정 후 상승 예측 비율이 실제 상승 비율에 근접함.
 
-    개선된 오프셋 방식:
-      1) 예측 상승 비율과 실제 상승 비율의 차이를 오프셋으로 변환
-      2) 개별 모델 예측의 분산을 고려하여 오프셋 크기 조절
-      3) 이를 통해 약한 상승 예측을 하락으로 전환 가능
+    예: 실제 하락 40% → 예측값의 40th percentile을 오프셋으로 사용
+    → 보정 후 약 60%가 양수(상승), 40%가 음수(하락)
     """
     up_ratio, actual_up, is_biased, bias_msg = detect_bias(prediction_history)
 
     if not is_biased:
         return pred_return, individual_returns, None
 
-    # 오프셋 계산: 예측 편향도 × 개별 예측 분산
-    # up_ratio=0.8, actual_up=0.5 → bias_gap=0.3
-    bias_gap = up_ratio - actual_up
+    # 최근 예측값 수집
+    recent_preds = [
+        h["predicted_return"] for h in prediction_history[-30:]
+        if h.get("predicted_return") is not None
+    ]
+    if not recent_preds or len(recent_preds) < 5:
+        return pred_return, individual_returns, bias_msg
 
-    # 개별 모델 예측의 표준편차를 기반으로 오프셋 크기 결정
-    individual_rets = individual_returns[:, 0] if individual_returns.ndim > 1 else individual_returns
-    spread = np.std(individual_rets)
-    offset = bias_gap * max(spread, 0.05)  # 최소 spread 보장
+    # 분위수 기반 오프셋: 실제 하락 비율에 해당하는 예측값 분위수
+    # actual_up=0.6 → down_ratio=0.4 → 40th percentile을 빼면 60%가 양수로 남음
+    down_ratio = 1.0 - actual_up
+    offset = float(np.percentile(recent_preds, down_ratio * 100))
 
-    # 추가 임계값 보정: 편향이 극심하면 더 강하게 보정
-    # up_ratio=0.8 → threshold_adj=0.125, up_ratio=0.97 → threshold_adj=0.21
-    threshold_adj = (up_ratio - 0.55) * 0.5
-
-    total_offset = offset + threshold_adj
-
-    calibrated_return = pred_return - total_offset
-    calibrated_individual = individual_returns - total_offset
+    calibrated_return = pred_return - offset
+    calibrated_individual = individual_returns - offset
 
     logger.info(
-        f"  [Calibration] 오프셋 보정: {pred_return:.3f}% → {calibrated_return:.3f}% "
-        f"(offset={total_offset:.3f}, bias_gap={bias_gap:.2f}, spread={spread:.3f})"
+        f"  [Calibration] 분위수 보정: {pred_return:.3f}% → {calibrated_return:.3f}% "
+        f"(offset={offset:.4f}, target_up={actual_up:.0%}, pred_up={up_ratio:.0%})"
     )
 
     return calibrated_return, calibrated_individual, bias_msg
