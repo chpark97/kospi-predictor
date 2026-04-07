@@ -1,4 +1,467 @@
 {
-  "history": [],
-  "weights": {}
+  "history": [
+    {
+      "correct": {
+        "attention_42": 1,
+        "attention_123": 1,
+        "attention_777": 0,
+        "baseline_42": 0,
+        "baseline_123": 1,
+        "cnn_42": 0,
+        "cnn_123": 1,
+        "transformer_42": 0,
+        "transformer_123": 1,
+        "tft_42": 0,
+        "tft_123": 1
+      }
+    },
+    {
+      "correct": {
+        "attention_42": 1,
+        "attention_123": 1,
+        "attention_777": 0,
+        "baseline_42": 0,
+        "baseline_123": 1,
+        "cnn_42": 0,
+        "cnn_123": 1,
+        "transformer_42": 0,
+        "transformer_123": 1,
+        "tft_42": 0,
+        "tft_123": 0
+      }
+    },
+    {
+      "correct": {
+        "attention_42": 1,
+        "attention_123": 1,
+        "attention_777": 0,
+        "baseline_42": 0,
+        "baseline_123": 1,
+        "cnn_42": 0,
+        "cnn_123": 1,
+        "transformer_42": 0,
+        "transformer_123": 1,
+        "tft_42": 0,
+        "tft_123": 1
+      }
+    },
+    {
+      "correct": {
+        "attention_42": 1,
+        "attention_123": 1,
+        "attention_777": 0,
+        "baseline_42": 0,
+        "baseline_123": 1,
+        "cnn_42": 0,
+        "cnn_123": 1,
+        "transformer_42": 0,
+        "transformer_123": 1,
+        "tft_42": 0,
+        "tft_123": 0
+      }
+    },
+    {
+      "correct": {
+        "attention_42": 0,
+        "attention_123": 0,
+        "attention_777": 1,
+        "baseline_42": 1,
+        "baseline_123": 1,
+        "cnn_42": 1,
+        "cnn_123": 0,
+        "transformer_42": 1,
+        "transformer_123": 1,
+        "tft_42": 1,
+        "tft_123": 1
+      }
+    },
+    {
+      "correct": {
+        "attention_42": 0,
+        "attention_123": 0,
+        "attention_777": 1,
+        "baseline_42": 1,
+        "baseline_123": 1,
+        "cnn_42": 1,
+        "cnn_123": 0,
+        "transformer_42": 1,
+        "transformer_123": 1,
+        "tft_42": 1,
+        "tft_123": 1
+      }
+    },
+    {
+      "correct": {
+        "attention_42": 0,
+        "attention_123": 0,
+        "attention_777": 1,
+        "baseline_42": 1,
+        "baseline_123": 1,
+        "cnn_42": 0,
+        "cnn_123": 0,
+        "transformer_42": 1,
+        "transformer_123": 0,
+        "tft_42": 1,
+        "tft_123": 1
+      }
+    },
+    {
+      "correct": {
+        "attention_42": 1,
+        "attention_123": 1,
+        "attention_777": 1,
+        "baseline_42": 0,
+        "baseline_123": 1,
+        "cnn_42": 1,
+        "cnn_123": 1,
+        "transformer_42": 0,
+        "transformer_123": 1,
+        "tft_42": 0,
+        "tft_123": 0
+      }
+    },
+    {
+      "correct": {
+        "attention_42": 1,
+        "attention_123": 1,
+        "attention_777": 1,
+        "baseline_42": 1,
+        "baseline_123": 1,
+        "cnn_42": 1,
+        "cnn_123": 1,
+        "transformer_42": 0,
+        "transformer_123": 1,
+        "tft_42": 0,
+        "tft_123": 1
+      }
+    },
+    {
+      "correct": {
+        "attention_42": 0,
+        "attention_123": 0,
+        "attention_777": 0,
+        "baseline_42": 0,
+        "baseline_123": 0,
+        "cnn_42": 0,
+        "cnn_123": 0,
+        "transformer_42": 1,
+        "transformer_123": 0,
+        "tft_42": 1,
+        "tft_123": 0
+      }
+    },
+    {
+      "correct": {
+        "attention_42": 1,
+        "attention_123": 1,
+        "attention_777": 1,
+        "baseline_42": 1,
+        "baseline_123": 1,
+        "cnn_42": 1,
+        "cnn_123": 1,
+        "transformer_42": 1,
+        "transformer_123": 1,
+        "tft_42": 0,
+        "tft_123": 0
+      }
+    },
+    {
+      "correct": {
+        "attention_42": 1,
+        "attention_123": 1,
+        "attention_777": 1,
+        "baseline_42": 1,
+        "baseline_123": 1,
+        "cnn_42": 1,
+        "cnn_123": 1,
+        "transformer_42": 1,
+        "transformer_123": 1,
+        "tft_42": 0,
+        "tft_123": 0
+      }
+    },
+    {
+      "correct": {
+        "attention_42": 0,
+        "attention_123": 0,
+        "attention_777": 0,
+        "baseline_42": 0,
+        "baseline_123": 0,
+        "cnn_42": 0,
+        "cnn_123": 0,
+        "transformer_42": 0,
+        "transformer_123": 0,
+        "tft_42": 1,
+        "tft_123": 0
+      }
+    },
+    {
+      "correct": {
+        "attention_42": 0,
+        "attention_123": 0,
+        "attention_777": 0,
+        "baseline_42": 0,
+        "baseline_123": 0,
+        "cnn_42": 0,
+        "cnn_123": 0,
+        "transformer_42": 1,
+        "transformer_123": 0,
+        "tft_42": 1,
+        "tft_123": 1
+      }
+    },
+    {
+      "correct": {
+        "attention_42": 1,
+        "attention_123": 1,
+        "attention_777": 1,
+        "baseline_42": 1,
+        "baseline_123": 1,
+        "cnn_42": 1,
+        "cnn_123": 1,
+        "transformer_42": 1,
+        "transformer_123": 1,
+        "tft_42": 0,
+        "tft_123": 1
+      }
+    },
+    {
+      "correct": {
+        "attention_42": 1,
+        "attention_123": 1,
+        "attention_777": 1,
+        "baseline_42": 1,
+        "baseline_123": 1,
+        "cnn_42": 1,
+        "cnn_123": 1,
+        "transformer_42": 1,
+        "transformer_123": 1,
+        "tft_42": 0,
+        "tft_123": 1
+      }
+    },
+    {
+      "correct": {
+        "attention_42": 1,
+        "attention_123": 1,
+        "attention_777": 1,
+        "baseline_42": 1,
+        "baseline_123": 1,
+        "cnn_42": 1,
+        "cnn_123": 1,
+        "transformer_42": 0,
+        "transformer_123": 1,
+        "tft_42": 0,
+        "tft_123": 1
+      }
+    },
+    {
+      "correct": {
+        "attention_42": 0,
+        "attention_123": 0,
+        "attention_777": 0,
+        "baseline_42": 0,
+        "baseline_123": 0,
+        "cnn_42": 0,
+        "cnn_123": 0,
+        "transformer_42": 1,
+        "transformer_123": 0,
+        "tft_42": 1,
+        "tft_123": 0
+      }
+    },
+    {
+      "correct": {
+        "attention_42": 1,
+        "attention_123": 1,
+        "attention_777": 1,
+        "baseline_42": 1,
+        "baseline_123": 1,
+        "cnn_42": 1,
+        "cnn_123": 1,
+        "transformer_42": 0,
+        "transformer_123": 1,
+        "tft_42": 0,
+        "tft_123": 1
+      }
+    },
+    {
+      "correct": {
+        "attention_42": 0,
+        "attention_123": 0,
+        "attention_777": 0,
+        "baseline_42": 0,
+        "baseline_123": 0,
+        "cnn_42": 0,
+        "cnn_123": 0,
+        "transformer_42": 1,
+        "transformer_123": 0,
+        "tft_42": 1,
+        "tft_123": 0
+      }
+    },
+    {
+      "correct": {
+        "attention_42": 1,
+        "attention_123": 1,
+        "attention_777": 1,
+        "baseline_42": 1,
+        "baseline_123": 1,
+        "cnn_42": 1,
+        "cnn_123": 1,
+        "transformer_42": 0,
+        "transformer_123": 1,
+        "tft_42": 0,
+        "tft_123": 1
+      }
+    },
+    {
+      "correct": {
+        "attention_42": 1,
+        "attention_123": 1,
+        "attention_777": 1,
+        "baseline_42": 1,
+        "baseline_123": 1,
+        "cnn_42": 1,
+        "cnn_123": 1,
+        "transformer_42": 0,
+        "transformer_123": 1,
+        "tft_42": 0,
+        "tft_123": 1
+      }
+    },
+    {
+      "correct": {
+        "attention_42": 0,
+        "attention_123": 0,
+        "attention_777": 0,
+        "baseline_42": 0,
+        "baseline_123": 0,
+        "cnn_42": 0,
+        "cnn_123": 0,
+        "transformer_42": 1,
+        "transformer_123": 0,
+        "tft_42": 1,
+        "tft_123": 0
+      }
+    },
+    {
+      "correct": {
+        "attention_42": 0,
+        "attention_123": 0,
+        "attention_777": 1,
+        "baseline_42": 1,
+        "baseline_123": 0,
+        "cnn_42": 0,
+        "cnn_123": 0,
+        "transformer_42": 1,
+        "transformer_123": 0,
+        "tft_42": 1,
+        "tft_123": 1
+      }
+    },
+    {
+      "correct": {
+        "attention_42": 0,
+        "attention_123": 0,
+        "attention_777": 1,
+        "baseline_42": 0,
+        "baseline_123": 0,
+        "cnn_42": 0,
+        "cnn_123": 0,
+        "transformer_42": 0,
+        "transformer_123": 0,
+        "tft_42": 1,
+        "tft_123": 1
+      }
+    },
+    {
+      "correct": {
+        "attention_42": 0,
+        "attention_123": 0,
+        "attention_777": 1,
+        "baseline_42": 1,
+        "baseline_123": 0,
+        "cnn_42": 0,
+        "cnn_123": 0,
+        "transformer_42": 1,
+        "transformer_123": 0,
+        "tft_42": 1,
+        "tft_123": 0
+      }
+    },
+    {
+      "correct": {
+        "attention_42": 1,
+        "attention_123": 1,
+        "attention_777": 0,
+        "baseline_42": 1,
+        "baseline_123": 1,
+        "cnn_42": 1,
+        "cnn_123": 1,
+        "transformer_42": 1,
+        "transformer_123": 1,
+        "tft_42": 0,
+        "tft_123": 1
+      }
+    },
+    {
+      "correct": {
+        "attention_42": 0,
+        "attention_123": 0,
+        "attention_777": 1,
+        "baseline_42": 0,
+        "baseline_123": 0,
+        "cnn_42": 0,
+        "cnn_123": 1,
+        "transformer_42": 0,
+        "transformer_123": 0,
+        "tft_42": 0,
+        "tft_123": 0
+      }
+    },
+    {
+      "correct": {
+        "attention_42": 1,
+        "attention_123": 1,
+        "attention_777": 1,
+        "baseline_42": 1,
+        "baseline_123": 1,
+        "cnn_42": 1,
+        "cnn_123": 0,
+        "transformer_42": 0,
+        "transformer_123": 1,
+        "tft_42": 0,
+        "tft_123": 1
+      }
+    },
+    {
+      "correct": {
+        "attention_42": 1,
+        "attention_123": 1,
+        "attention_777": 1,
+        "baseline_42": 1,
+        "baseline_123": 1,
+        "cnn_42": 1,
+        "cnn_123": 0,
+        "transformer_42": 1,
+        "transformer_123": 1,
+        "tft_42": 0,
+        "tft_123": 1
+      }
+    }
+  ],
+  "weights": {
+    "attention_42": 0.5666666666666667,
+    "attention_123": 0.5666666666666667,
+    "attention_777": 0.6333333333333333,
+    "baseline_42": 0.5666666666666667,
+    "baseline_123": 0.6666666666666666,
+    "cnn_42": 0.5,
+    "cnn_123": 0.5333333333333333,
+    "transformer_42": 0.5333333333333333,
+    "transformer_123": 0.6333333333333333,
+    "tft_42": 0.4,
+    "tft_123": 0.6
+  }
 }
