@@ -60,13 +60,20 @@ class DirectionalLoss(nn.Module):
 
 
 def _compute_class_weight(y):
-    """상승/하락 비율로 클래스 가중치 계산"""
+    """상승/하락 비율로 클래스 가중치 계산
+
+    BCEWithLogitsLoss의 pos_weight는 레이블=1(상승일)에 대한 패널티 배율.
+    코스피는 상승일이 다수이므로 pos_weight < 1로 설정해야
+    하락일을 놓쳤을 때의 상대 패널티가 커져 상승 편향이 제거된다.
+    """
     n_up = (y > 0).sum()
     n_down = (y <= 0).sum()
     if n_down == 0 or n_up == 0:
         return None
-    # 소수 클래스에 더 큰 가중치
-    weight = n_up / n_down  # >1이면 하락이 소수 → 하락 가중
+    # pos_weight = 하락일 수 / 상승일 수
+    # 상승일 多 → pos_weight < 1 → 상승 레이블 패널티 감소
+    #                             → 하락 레이블 상대 패널티 증가 → 편향 교정
+    weight = n_down / n_up
     return float(weight)
 
 
