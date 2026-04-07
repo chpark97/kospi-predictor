@@ -88,11 +88,26 @@ class EnsemblePredictor:
         weights = np.array(weights)
         weights = weights / weights.sum()
 
-        pred_return = np.average(all_returns, axis=0, weights=weights)
+        # 개별 모델의 가중 평균 예측값
+        weighted_return = np.average(all_returns, axis=0, weights=weights)
 
+        # 다수결 기반 방향 결정 (개선: predicted_return 부호 대신 up_vote_ratio 사용)
+        # 기존 문제: weighted_return이 항상 양수여서 up만 예측
+        # 개선: 개별 모델 다수결(up_vote_ratio)로 최종 방향 결정
         directions = (all_returns > 0).astype(float)
         up_vote_ratio = np.average(directions, axis=0, weights=weights)
         agreement = np.abs(up_vote_ratio - 0.5) * 2
+
+        # 최종 예측값: 다수결 방향에 따라 부호 결정
+        # up_vote_ratio < 0.5 이면 하락 → 예측값을 음수로 전환
+        pred_return = weighted_return.copy()
+        for i in range(len(up_vote_ratio)):
+            if up_vote_ratio[i] < 0.5 and weighted_return[i] > 0:
+                # 다수결이 하락인데 가중평균이 양수면 부호 전환
+                pred_return[i] = -abs(weighted_return[i])
+            elif up_vote_ratio[i] >= 0.5 and weighted_return[i] < 0:
+                # 다수결이 상승인데 가중평균이 음수면 부호 전환
+                pred_return[i] = abs(weighted_return[i])
 
         avg_conf = np.average(all_confs, axis=0, weights=weights)
         confidence = avg_conf * (0.5 + 0.5 * agreement)

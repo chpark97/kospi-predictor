@@ -37,13 +37,18 @@ def old_compute_composite_confidence(details, prediction_history=None):
 
 
 def new_compute_composite_confidence(details, prediction_history=None):
-    """수정 후 (개선) 로직"""
+    """수정 후 (개선) 로직 — 상승 편향 패널티 포함"""
     all_returns = details["individual_returns"]
     individual_rets = all_returns[:, 0]
 
     up_vote_ratio = details["up_vote_ratio"][0]
     raw_agreement = abs(up_vote_ratio - 0.5) * 2
     agreement_score = raw_agreement ** 0.6 * 100
+
+    # 상승 편향 패널티: up_ratio > 0.8이면 합의도 점수 감쇄
+    if up_vote_ratio > 0.8:
+        bias_penalty = (up_vote_ratio - 0.8) * 2.5  # 0.8→0, 1.0→0.5
+        agreement_score *= (1 - bias_penalty)
 
     mean_abs = np.mean(np.abs(individual_rets))
     strength_score = min((mean_abs / 0.15) ** 0.7 * 70, 100)
@@ -58,7 +63,8 @@ def new_compute_composite_confidence(details, prediction_history=None):
 
     predicted_up = np.mean(individual_rets) > 0
     # prediction_history에서 검증된 기록 활용
-    accuracy_score = 50.0
+    # 기본값: 35.0 (보수적 운영, 기존 50.0에서 하향)
+    accuracy_score = 35.0
     if prediction_history:
         recent_verified = [h for h in prediction_history[-20:] if h.get("actual_direction")]
         if len(recent_verified) >= 3:
@@ -107,7 +113,43 @@ SAMPLE_HISTORY = [
 ]
 
 
+def test_all_up_weak_predictions_below_threshold():
+    """전부 상승 약한 예측값 시나리오에서 신뢰도가 임계값(50%) 미만인지 검증
+
+    상승 편향 패널티(up_ratio > 0.8)와 보수적 fallback(35.0)이 적용되면
+    전부 상승 예측 시 신뢰도가 50% 미만으로 나와야 리스크 필터가 작동함.
+    """
+    # 실제 문제 상황: 9개 모델 전부 약한 상승 예측
+    weak_all_up = [0.04, 0.05, 0.03, 0.06, 0.04, 0.05, 0.03, 0.04, 0.05]
+    details = make_details(weak_all_up)
+
+    # 히스토리 없이 테스트 (fallback=35.0 적용)
+    composite, agreement, strength, consistency, accuracy = new_compute_composite_confidence(details)
+
+    # 검증: 신뢰도가 50% 미만이어야 bull 레짐에서 리스크 필터 발동
+    BULL_THRESHOLD = 50.0
+    assert composite < BULL_THRESHOLD, (
+        f"전부 상승 약한 예측 시 신뢰도({composite:.1f}%)가 "
+        f"bull 임계값({BULL_THRESHOLD}%) 이상 - 편향 교정 실패"
+    )
+
+    # up_ratio=1.0 → 상승 편향 패널티로 합의도가 크게 감소해야 함
+    # 패널티 없을 때 100점 → 패널티 적용 후 ~50점 (부동소수점 오차 허용)
+    assert agreement < 51, f"up_ratio=1.0인데 합의도({agreement:.0f})가 50 초과 - 패널티 미적용"
+
+    print(f"✅ 테스트 통과: 전부 상승 약한 예측 → 신뢰도 {composite:.1f}% < {BULL_THRESHOLD}%")
+    print(f"   (합의={agreement:.0f}, 강도={strength:.0f}, 일관={consistency:.0f}, 정확={accuracy:.0f})")
+    return True
+
+
 def main():
+    # 편향 교정 테스트 먼저 실행
+    print("=" * 80)
+    print("편향 교정 테스트")
+    print("=" * 80)
+    test_all_up_weak_predictions_below_threshold()
+    print()
+
     scenarios = {
         "9개 전부 상승 (강한 합의, 큰 예측값)": [0.25, 0.20, 0.22, 0.18, 0.24, 0.21, 0.19, 0.23, 0.20],
         "9개 전부 상승 (약한 예측값)":          [0.04, 0.05, 0.03, 0.06, 0.04, 0.05, 0.03, 0.04, 0.05],
