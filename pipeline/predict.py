@@ -43,6 +43,11 @@ def load_ensemble(model_path=None):
     num_features = checkpoint["num_features"]
     seq_length = checkpoint.get("seq_length", 20)
 
+    # 피처 선택 인덱스 로드 (없으면 None - 하위 호환)
+    selected_feature_indices = checkpoint.get("selected_feature_indices", None)
+    if selected_feature_indices is not None:
+        logger.info(f"피처 선택 로드: {len(selected_feature_indices)}개 피처 사용")
+
     scaler = StandardScaler()
     scaler.mean_ = checkpoint["scaler_mean"]
     scaler.scale_ = checkpoint["scaler_scale"]
@@ -57,7 +62,7 @@ def load_ensemble(model_path=None):
             model.eval()
             ensemble.add_model(model, member["weight"], member["model_type"])
         logger.info(f"앙상블 로드: {len(checkpoint['members'])}개 모델")
-        return ensemble, scaler, checkpoint["feature_names"]
+        return ensemble, scaler, checkpoint["feature_names"], selected_feature_indices
     else:
         from models.lstm_attention import LSTMAttention
         from models.lstm_baseline import LSTMBaseline
@@ -67,7 +72,7 @@ def load_ensemble(model_path=None):
         m.eval()
         ens = EnsemblePredictor()
         ens.add_model(m, 1.0, mt)
-        return ens, scaler, checkpoint["feature_names"]
+        return ens, scaler, checkpoint["feature_names"], selected_feature_indices
 
 
 # ── DB 조회 ──
@@ -274,7 +279,7 @@ def run_prediction():
     df = fe.build_dataset()
 
     # 3. 앙상블 + 동적 가중치
-    ensemble, scaler, feature_names = load_ensemble()
+    ensemble, scaler, feature_names, selected_feature_indices = load_ensemble()
 
     member_names = [f"{mt}_{sd}" for mt, sd in ENSEMBLE_MEMBERS]
     dyn_weights = get_dynamic_weights(member_names)
@@ -315,6 +320,14 @@ def run_prediction():
 
     # 5. 예측
     X, _, dates, _ = fe.prepare_sequences(df, scaler=scaler, fit_scaler=False)
+
+    # 피처 선택 적용 (체크포인트에 인덱스가 있는 경우)
+    selected_feature_names = fe.feature_names  # 기본값: 전체 피처
+    if selected_feature_indices is not None:
+        X = X[:, :, selected_feature_indices]
+        selected_feature_names = [fe.feature_names[i] for i in selected_feature_indices]
+        logger.info(f"피처 선택 적용: {len(selected_feature_indices)}개 피처 사용")
+
     pred_return, _, details = ensemble.predict(X[-1:])
     pred_return = pred_return[0]
 
@@ -357,7 +370,7 @@ def run_prediction():
 
     # 5d. SHAP
     from pipeline.shap_explain import get_top_features, format_shap_results
-    top_features = get_top_features(ensemble, X[-1:], fe.feature_names, top_k=5)
+    top_features = get_top_features(ensemble, X[-1:], selected_feature_names, top_k=5)
     shap_str = format_shap_results(top_features)
 
     # 6. 리스크 필터 (신뢰도 계산 전에 먼저 적용)
@@ -640,7 +653,7 @@ def backfill_prediction_history():
     logger.info("소급 초기화 중...")
 
     try:
-        ensemble, scaler, _ = load_ensemble()
+        ensemble, scaler, _, selected_feature_indices = load_ensemble()
     except FileNotFoundError:
         logger.warning("모델 없음")
         return
@@ -648,6 +661,11 @@ def backfill_prediction_history():
     fe = FeatureEngineer()
     df = fe.build_dataset()
     X_all, y_all, dates_all, _ = fe.prepare_sequences(df, scaler=scaler, fit_scaler=False)
+
+    # 피처 선택 적용
+    if selected_feature_indices is not None:
+        X_all = X_all[:, :, selected_feature_indices]
+        logger.info(f"피처 선택 적용: {len(selected_feature_indices)}개 피처 사용")
 
     history = _load_prediction_history()
     existing = {h["date"] for h in history}
