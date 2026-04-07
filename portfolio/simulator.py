@@ -191,7 +191,18 @@ def _get_latest_kospi_close():
 
 def get_portfolio_summary():
     pf = _load_portfolio()
-    total_value = pf["capital"] + (pf["invested_amount"] if pf["position"] == "long" else 0)
+
+    # 미실현 손익 계산
+    unrealized_pnl = 0
+    if pf["position"] == "long" and pf["entry_price"] and pf["invested_amount"] > 0:
+        current_price = _get_latest_kospi_close()
+        unrealized_pnl = pf["invested_amount"] * (current_price / pf["entry_price"] - 1)
+        market_value = pf["invested_amount"] + unrealized_pnl
+    else:
+        current_price = None
+        market_value = 0
+
+    total_value = pf["capital"] + market_value
     initial = pf["initial_capital"]
     total_return = (total_value / initial - 1) * 100
     wins = pf["wins"]
@@ -223,6 +234,7 @@ def get_portfolio_summary():
         "win_rate": round(win_rate, 1),
         "mdd": pf.get("max_drawdown", 0),
         "sizing": pf.get("sizing_ratio", 1.0),
+        "unrealized_pnl": round(unrealized_pnl),
     }
 
 
@@ -230,10 +242,14 @@ def format_portfolio_summary():
     s = get_portfolio_summary()
     sign = "+" if s["total_return"] >= 0 else ""
     sizing_pct = int(s.get("sizing", 1.0) * 100)
+    unrealized_pnl = s.get("unrealized_pnl", 0)
+    pnl_sign = "+" if unrealized_pnl >= 0 else ""
+    pnl_line = f"  미실현 손익: {pnl_sign}{unrealized_pnl:,}원\n" if unrealized_pnl != 0 else ""
     return (
         f"💰 *가상 포트폴리오*\n"
         f"  잔고: {s['capital']:,}원 ({sign}{s['total_return']}%)\n"
         f"  포지션: {s['position']}\n"
+        f"{pnl_line}"
         f"  투입비율: {sizing_pct}% | MDD: {s['mdd']:.1f}%\n"
         f"  승률: {s['wins']}승 {s['losses']}패 ({s['win_rate']}%)"
     )
