@@ -83,7 +83,7 @@ def calibrate_prediction(pred_return, individual_returns, prediction_history):
 
     logger.info(
         f"  [Calibration] 오프셋 보정: {pred_return:.3f}% → {calibrated_return:.3f}% "
-        f"(offset={total_offset:.3f}, bias_gap={bias_gap:.2f}, spread={spread:.3f})"
+        f"(offset={total_offset:.3f}, bias_gap={bias_gap:.2f}, multiplier={multiplier:.3f})"
     )
 
     return calibrated_return, calibrated_individual, bias_msg
