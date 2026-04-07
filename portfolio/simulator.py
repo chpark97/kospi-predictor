@@ -60,11 +60,12 @@ def _save_portfolio(pf):
 
 
 def execute_trade(date, signal_valid, predicted_direction, mc_level="medium",
-                  ohlc=None):
-    """일일 양방향 매매 실행
+                  ohlc=None, confidence=None, confidence_threshold=None):
+    """일일 양방향 매매 실행 (신뢰도 필터 포함)
 
     매일 open 매수 → 목표가 도달 시 청산, 미도달 시 장마감(close) 청산.
     오버나이트 없음: 매일 position이 cash로 리셋.
+    신뢰도 필터: confidence < confidence_threshold이면 현금 보유.
 
     Args:
         date: 거래일 (YYYY-MM-DD)
@@ -72,6 +73,8 @@ def execute_trade(date, signal_valid, predicted_direction, mc_level="medium",
         predicted_direction: "up" 또는 "down"
         mc_level: MC Dropout 불확실성 ("low"/"medium"/"high")
         ohlc: dict with "open", "high", "low", "close" (None이면 DB 조회)
+        confidence: 예측 신뢰도 (0-100, None이면 필터 미적용)
+        confidence_threshold: 신뢰도 임계값 (0-100, None이면 필터 미적용)
     """
     pf = _load_portfolio()
 
@@ -84,6 +87,25 @@ def execute_trade(date, signal_valid, predicted_direction, mc_level="medium",
     if ohlc is None:
         logger.warning(f"  [Portfolio] {date} OHLC 데이터 없음")
         return pf
+
+    # ── 신뢰도 필터: 임계값 미달 시 현금 보유 ──
+    if confidence is not None and confidence_threshold is not None:
+        if confidence < confidence_threshold:
+            logger.info(f"  [Portfolio] 신뢰도 {confidence:.1f}% < 임계값 {confidence_threshold}% → 현금 보유 (skip)")
+            trade = {
+                "date": date,
+                "direction": None,
+                "action": "skip",
+                "entry_price": None,
+                "exit_price": None,
+                "exit_reason": f"신뢰도 미달 ({confidence:.1f}% < {confidence_threshold}%)",
+                "pnl": 0,
+                "return_pct": 0,
+            }
+            pf["trades"].append(trade)
+            pf["trades"] = pf["trades"][-90:]
+            _save_portfolio(pf)
+            return pf
 
     open_price = ohlc["open"]
     high_price = ohlc["high"]

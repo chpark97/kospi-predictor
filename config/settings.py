@@ -70,4 +70,6 @@ WALK_FORWARD_SPLITS = [
     {"train_end": "2021-12-31", "test_start": "2022-01-01", "test_end": "2022-12-31"},
     {"train_end": "2022-12-31", "test_start": "2023-01-01", "test_end": "2023-12-31"},
     {"train_end": "2023-12-31", "test_start": "2024-01-01", "test_end": "2024-12-31"},
+    {"train_end": "2024-12-31", "test_start": "2025-01-01", "test_end": "2025-12-31"},
+    {"train_end": "2025-12-31", "test_start": "2026-01-01", "test_end": "2026-04-06"},
 ]

@@ -6,7 +6,7 @@ from pathlib import Path
 import numpy as np
 import torch
 import torch.nn as nn
-from torch.utils.data import DataLoader, TensorDataset
+from torch.utils.data import DataLoader, TensorDataset, WeightedRandomSampler
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
@@ -16,9 +16,11 @@ from config.settings import (
 )
 from models.ensemble import ENSEMBLE_MEMBERS, EnsemblePredictor, create_model
 from preprocessing.feature_engineer import FeatureEngineer
-from evaluation.backtest import evaluate_predictions
+from evaluation.backtest import evaluate_predictions, evaluate_with_thresholds
 from pipeline.optuna_tuner import load_best_params
 from pipeline.feature_selection import rank_features_by_importance, select_top_features
+from pipeline.training_visualizer import TrainingVisualizer, format_training_report
+from notifications.slack_notifier import send_slack_message
 
 logger = logging.getLogger(__name__)
 
@@ -96,8 +98,25 @@ def compute_time_weights(n_samples):
 
 
 def train_single_model(model, train_loader, val_loader, epochs=None, lr=None,
-                       patience=None, min_epochs=None):
-    """단일 모델 학습"""
+                       patience=None, min_epochs=None, time_weights=None,
+                       visualizer=None):
+    """단일 모델 학습
+
+    Args:
+        model: 학습할 모델
+        train_loader: 훈련 데이터 로더
+        val_loader: 검증 데이터 로더
+        epochs: 최대 에폭 수
+        lr: 학습률
+        patience: 조기 종료 인내도
+        min_epochs: 최소 학습 에폭
+        time_weights: 시간 가중치 텐서 (샘플별)
+        visualizer: TrainingVisualizer 인스턴스 (실시간 시각화용)
+
+    Returns:
+        (model, best_val_loss, best_val_da, epoch_metrics)
+        epoch_metrics: {"train_losses": [], "val_losses": [], "train_das": [], "val_das": []}
+    """
     epochs = epochs or EPOCHS
     lr = lr or LEARNING_RATE
     patience = patience or EARLY_STOPPING_PATIENCE
@@ -125,6 +144,14 @@ def train_single_model(model, train_loader, val_loader, epochs=None, lr=None,
     best_val_da = 0.0
     best_state = None
     wait = 0
+
+    # 에폭별 메트릭 수집
+    epoch_metrics = {
+        "train_losses": [],
+        "val_losses": [],
+        "train_das": [],
+        "val_das": [],
+    }
 
     for epoch in range(epochs):
         model.train()
@@ -155,11 +182,22 @@ def train_single_model(model, train_loader, val_loader, epochs=None, lr=None,
                 da = ((pred_return > 0) == (y_batch > 0)).float().mean().item()
                 val_da_list.append(da)
 
+        train_loss = np.mean(train_losses)
         val_loss = np.mean(val_mse_list)
+        train_da = np.mean(train_dir_acc) * 100
         val_da = np.mean(val_da_list) * 100
 
+        # 메트릭 저장
+        epoch_metrics["train_losses"].append(train_loss)
+        epoch_metrics["val_losses"].append(val_loss)
+        epoch_metrics["train_das"].append(train_da)
+        epoch_metrics["val_das"].append(val_da)
+
+        # 실시간 시각화 업데이트
+        if visualizer:
+            visualizer.update_epoch(epoch + 1, train_loss, val_loss, train_da, val_da)
+
         if (epoch + 1) % 20 == 0:
-            train_da = np.mean(train_dir_acc) * 100
             logger.info(
                 f"    Epoch {epoch+1:3d}: train_DA={train_da:.1f}% | "
                 f"val_loss={val_loss:.4f} val_DA={val_da:.1f}%"
@@ -179,7 +217,7 @@ def train_single_model(model, train_loader, val_loader, epochs=None, lr=None,
     if best_state:
         model.load_state_dict(best_state)
 
-    return model, best_val_loss, best_val_da
+    return model, best_val_loss, best_val_da, epoch_metrics
 
 
 def _compute_feature_selection(X_train, y_train, feature_names, target_count=40):
@@ -239,8 +277,12 @@ def _apply_feature_selection(X, selected_indices):
     return X[:, :, selected_indices]
 
 
-def walk_forward_ensemble():
-    """앙상블 Walk-forward validation"""
+def walk_forward_ensemble(enable_visualization=True):
+    """앙상블 Walk-forward validation
+
+    Args:
+        enable_visualization: matplotlib 실시간 시각화 활성화 여부
+    """
     # Optuna 최적 파라미터 로드
     best_params = load_best_params()
     if best_params:
@@ -256,6 +298,20 @@ def walk_forward_ensemble():
 
     # 피처 선택 결과 저장 (최종 앙상블에 재사용)
     global_selected_indices = None
+    global_feature_ranking = None
+
+    # 모델별 DA 저장 (최종 split 기준)
+    last_split_model_das = {}
+
+    # 실시간 시각화 초기화
+    visualizer = None
+    if enable_visualization:
+        try:
+            visualizer = TrainingVisualizer(n_models=len(ENSEMBLE_MEMBERS))
+            visualizer.initialize()
+        except Exception as e:
+            logger.warning(f"시각화 초기화 실패 (headless 환경?): {e}")
+            visualizer = None
 
     for i, split in enumerate(WALK_FORWARD_SPLITS):
         train_end = split["train_end"]
@@ -301,8 +357,13 @@ def walk_forward_ensemble():
         logger.info(f"Train: {X_tr.shape}, Val: {X_val.shape}, Test: {X_test.shape}")
         logger.info(f"피처 수: {num_features}, 앙상블 멤버 수: {len(ENSEMBLE_MEMBERS)}")
 
+        # ── 시간 가중치 계산 ──
+        time_weights = compute_time_weights(len(X_tr))
+        time_weights_tensor = torch.FloatTensor(time_weights)
+
         # ── 개별 모델 학습 ──
         ensemble = EnsemblePredictor()
+        split_model_das = {}
 
         for j, (model_type, seed) in enumerate(ENSEMBLE_MEMBERS):
             torch.manual_seed(seed)
@@ -313,21 +374,34 @@ def walk_forward_ensemble():
 
             logger.info(f"  [{j+1}/{len(ENSEMBLE_MEMBERS)}] {model_type} (seed={seed}, params={params:,})")
 
+            # 시간 가중치를 WeightedRandomSampler로 적용
             train_ds = TensorDataset(torch.FloatTensor(X_tr), torch.FloatTensor(y_tr))
             val_ds = TensorDataset(torch.FloatTensor(X_val), torch.FloatTensor(y_val))
-            train_loader = DataLoader(train_ds, batch_size=BATCH_SIZE, shuffle=True, drop_last=True)
-            val_loader = DataLoader(val_ds, batch_size=BATCH_SIZE)
 
             hp_lr = best_params.get("learning_rate", LEARNING_RATE)
             hp_bs = best_params.get("batch_size", BATCH_SIZE)
-            train_loader = DataLoader(train_ds, batch_size=hp_bs, shuffle=True, drop_last=True)
+
+            # 시간 가중치 적용된 샘플러 생성
+            sampler = WeightedRandomSampler(
+                weights=time_weights_tensor,
+                num_samples=len(X_tr),
+                replacement=True
+            )
+            train_loader = DataLoader(train_ds, batch_size=hp_bs, sampler=sampler, drop_last=True)
             val_loader = DataLoader(val_ds, batch_size=hp_bs)
 
-            model, val_loss, val_da = train_single_model(model, train_loader, val_loader, lr=hp_lr)
+            # 시각화 에폭 메트릭 초기화
+            if visualizer:
+                visualizer.reset_epoch_metrics()
+
+            model, val_loss, val_da, epoch_metrics = train_single_model(
+                model, train_loader, val_loader, lr=hp_lr, visualizer=visualizer
+            )
             logger.info(f"    → val_loss={val_loss:.4f}, val_DA={val_da:.1f}%")
 
             weight = max(val_da - 45, 1.0)
             ensemble.add_model(model, weight, model_type)
+            split_model_das[model_type] = val_da
 
         # ── 앙상블 테스트 ──
         pred_returns, pred_confs, details = ensemble.predict(X_test)
@@ -335,15 +409,40 @@ def walk_forward_ensemble():
         logger.info(f"\n  앙상블 결과:")
         logger.info(f"  모델 가중치: {details['weights'].round(3)}")
 
-        # 개별 모델 DA도 출력
+        # 개별 모델 DA도 출력 및 저장
+        test_model_das = {}
         for j, (model_type, seed) in enumerate(ENSEMBLE_MEMBERS):
             indiv_da = np.mean((details["individual_returns"][j] > 0) == (y_test > 0)) * 100
             logger.info(f"    {model_type}(seed={seed}): DA={indiv_da:.1f}%")
+            test_model_das[f"{model_type}"] = indiv_da
+
+        # 최종 split의 모델 DA 저장
+        last_split_model_das = test_model_das
 
         metrics = evaluate_predictions(y_test, pred_returns, pred_confs, dates_test)
         metrics["split"] = f"{test_start[:4]}"
         metrics["agreement"] = float(details["agreement"].mean())
         all_results.append(metrics)
+
+        # 피처 중요도 계산 (train 데이터 기반)
+        feature_ranking = rank_features_by_importance(
+            ensemble, X_train, [fe.feature_names[idx] for idx in selected_indices],
+            n_samples=min(100, len(X_train))
+        )
+        global_feature_ranking = feature_ranking
+
+        # 실시간 시각화 업데이트
+        if visualizer:
+            daily_preds = pred_returns > 0
+            daily_actuals = y_test > 0
+            visualizer.update_split_complete(
+                split_idx=i,
+                model_das=test_model_das,
+                daily_preds=daily_preds,
+                daily_actuals=daily_actuals,
+                feature_ranking=feature_ranking,
+                dates=dates_test
+            )
 
         # 앙상블 저장
         save_path = SAVE_DIR / f"ensemble_split{i+1}.pt"
@@ -387,6 +486,10 @@ def walk_forward_ensemble():
         avg_sharpe = np.mean([r["sharpe_ratio"] for r in all_results])
         logger.info("-" * 65)
         logger.info(f"{'평균':<8} {avg_da:>9.1f}% {avg_ret:>9.2f}% {avg_sharpe:>8.2f}")
+
+    # 최종 시각화 업데이트
+    if visualizer:
+        visualizer.show_final_summary(all_results)
 
     # ── 최종 앙상블: 전체 데이터로 재학습 ──
     logger.info(f"\n최종 앙상블 학습 (전체 데이터)...")
@@ -448,6 +551,34 @@ def walk_forward_ensemble():
     }, final_path)
     logger.info(f"최종 앙상블 저장: {final_path}")
     logger.info(f"  선택된 피처 인덱스 저장: {len(global_selected_indices)}개")
+
+    # ── 차트 저장 및 슬랙 리포트 ──
+    if visualizer:
+        chart_path = visualizer.save_charts()
+        logger.info(f"학습 차트 저장 완료: {chart_path}")
+
+    # 모델 랭킹 정렬
+    model_rankings = sorted(last_split_model_das.items(), key=lambda x: x[1], reverse=True)
+
+    # 슬랙 텍스트 요약 전송
+    try:
+        slack_report = format_training_report(
+            all_split_results=all_results,
+            model_rankings=model_rankings,
+            feature_rankings=global_feature_ranking,
+            best_threshold=None,  # 임계값 비교는 evaluate_with_thresholds에서 수행
+            threshold_metrics=None
+        )
+        send_slack_message(slack_report)
+        logger.info("[Slack] 학습 리포트 전송 완료")
+    except Exception as e:
+        logger.warning(f"슬랙 리포트 전송 실패: {e}")
+
+    # 시각화 블로킹 표시 (사용자가 창을 닫을 때까지)
+    if visualizer:
+        logger.info("차트 창을 닫으면 학습이 완료됩니다...")
+        visualizer.show_blocking()
+        visualizer.close()
 
     return all_results
 
