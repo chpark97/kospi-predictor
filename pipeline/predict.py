@@ -16,7 +16,7 @@ from config.settings import DB_PATH, LARGE_MOVE_THRESHOLD, LOG_PATH, VIX_THRESHO
 from models.ensemble import ENSEMBLE_MEMBERS, EnsemblePredictor, create_model
 from models.regime import detect_regime, get_regime_threshold, REGIME_LABELS
 from models.dynamic_weights import (
-    get_dynamic_weights, get_recent_accuracy, update_weights,
+    get_dynamic_weights, get_recent_accuracy, load_weights, update_weights,
 )
 from preprocessing.feature_engineer import FeatureEngineer
 
@@ -139,54 +139,39 @@ def _save_today_prediction(result, individual_dirs):
 def compute_composite_confidence(details, regime, prediction_history=None):
     """개선된 복합 신뢰도 — 4개 지표의 가중 합산
 
-    기존 문제: agreement*0.4 + concentration*0.3 + accuracy*0.3 이 항상 ~50으로 수렴
-    개선: 합의도/강도/일관성/방향별정확도로 변별력 확보
+    각 지표가 20~90% 범위를 커버하도록 스케일링 조정.
     """
     all_returns = details["individual_returns"]
     individual_rets = all_returns[:, 0]
 
     # 1. 모델 합의도 (0~100)
-    # 극단적 합의(>80% 또는 <20%)일 때 높은 점수
+    # up_vote_ratio가 극단일수록 (0 또는 1에 가까울수록) 높은 점수
+    # 비선형 매핑으로 6:3 이상 분할에서 의미 있는 차이 생성
     up_vote_ratio = details["up_vote_ratio"][0]
-    agreement_score = abs(up_vote_ratio - 0.5) * 200  # 0~100
+    raw_agreement = abs(up_vote_ratio - 0.5) * 2  # 0~1
+    agreement_score = raw_agreement ** 0.6 * 100   # 비선형: 5:4→18, 6:3→53, 7:2→72, 8:1→87, 9:0→100
 
     # 2. 예측 강도 (0~100)
-    # 개별 모델 예측치의 절대값 평균이 클수록 확신
+    # 실제 예측값 분포(0.04~0.3%)에 맞게 분모 조정
+    # 기존: mean_abs/0.5*100 → 항상 8~60 (변별력 부족)
+    # 개선: 0.1%를 중간점으로, 비선형 스케일링
     mean_abs = np.mean(np.abs(individual_rets))
-    strength_score = min(mean_abs / 0.5 * 100, 100)
+    strength_score = min((mean_abs / 0.15) ** 0.7 * 70, 100)  # 0.04→27, 0.1→53, 0.15→70, 0.25→90
 
     # 3. 모델 간 일관성 (0~100)
-    # 다수결 방향과 같은 모델들의 예측치 표준편차가 작을수록 높은 점수
+    # 다수결 방향과 같은 모델들의 예측치 변동계수(CV)로 측정
     majority_up = up_vote_ratio > 0.5
     same_dir = individual_rets[individual_rets > 0] if majority_up else individual_rets[individual_rets <= 0]
     if len(same_dir) > 1:
-        consistency_score = max(0, 100 - np.std(same_dir) * 200)
+        cv = np.std(same_dir) / (np.abs(np.mean(same_dir)) + 1e-8)  # 변동계수
+        consistency_score = max(0, min(100, 100 - cv * 100))  # CV 0→100, CV 1→0
     else:
-        consistency_score = 50
+        consistency_score = 30  # 다수결 방향 모델이 1개뿐이면 낮은 일관성
 
     # 4. 최근 방향별 정확도 (0~100)
     # 현재 예측 방향(상승/하락)에서의 최근 20일 정확도
     predicted_up = np.mean(individual_rets) > 0
-    accuracy_score = 50.0  # 기본값
-
-    if prediction_history:
-        recent_verified = [h for h in prediction_history[-20:] if h.get("actual_direction")]
-        if recent_verified:
-            same_pred = [
-                h for h in recent_verified
-                if (h["predicted_direction"] == "up") == predicted_up
-            ]
-            if same_pred:
-                dir_acc = sum(
-                    1 for h in same_pred
-                    if h["predicted_direction"] == h["actual_direction"]
-                ) / len(same_pred)
-                accuracy_score = dir_acc * 100
-    else:
-        # prediction_history가 없으면 기존 방식 fallback
-        recent_acc, n_days = get_recent_accuracy(30)
-        if recent_acc is not None and n_days >= 5:
-            accuracy_score = recent_acc
+    accuracy_score = _compute_accuracy_score(predicted_up, prediction_history)
 
     composite = (
         agreement_score * 0.30
@@ -201,6 +186,46 @@ def compute_composite_confidence(details, regime, prediction_history=None):
         f"+ 일관={consistency_score:.0f}×0.25 + 정확={accuracy_score:.0f}×0.3)"
     )
     return composite
+
+
+def _compute_accuracy_score(predicted_up, prediction_history):
+    """방향별 정확도 점수 계산. 다중 소스 활용."""
+    # 1순위: prediction_history에서 검증된 기록 사용
+    if prediction_history:
+        recent_verified = [h for h in prediction_history[-20:] if h.get("actual_direction")]
+        if len(recent_verified) >= 3:
+            same_pred = [
+                h for h in recent_verified
+                if (h["predicted_direction"] == "up") == predicted_up
+            ]
+            if len(same_pred) >= 2:
+                dir_acc = sum(
+                    1 for h in same_pred
+                    if h["predicted_direction"] == h["actual_direction"]
+                ) / len(same_pred)
+                return dir_acc * 100
+
+    # 2순위: dynamic_weights.json의 모델별 정확도 활용
+    dw_data = load_weights()
+    if dw_data and dw_data.get("history") and len(dw_data["history"]) >= 3:
+        history = dw_data["history"]
+        # 각 모델의 최근 정확도를 평균
+        model_accuracies = []
+        for name in dw_data.get("weights", {}):
+            correct_list = [h["correct"].get(name, False) for h in history[-20:]]
+            if correct_list:
+                model_accuracies.append(sum(correct_list) / len(correct_list))
+        if model_accuracies:
+            avg_acc = np.mean(model_accuracies)
+            return avg_acc * 100
+
+    # 3순위: get_recent_accuracy fallback
+    recent_acc, n_days = get_recent_accuracy(30)
+    if recent_acc is not None and n_days >= 5:
+        return recent_acc
+
+    # 데이터 없음 → 중립 (변별력 없는 값이지만 불가피)
+    return 50.0
 
 
 # ── 일일 예측 ──
@@ -617,6 +642,7 @@ def backfill_prediction_history():
     history = _load_prediction_history()
     existing = {h["date"] for h in history}
     member_names = [f"{mt}_{sd}" for mt, sd in ENSEMBLE_MEMBERS]
+    regime, _ = detect_regime()
     added = 0
 
     for i in range(max(0, len(X_all) - 30), len(X_all)):
@@ -626,11 +652,14 @@ def backfill_prediction_history():
         dirs = list(details["individual_returns"][:, 0] > 0)
         actual_up = y_all[i] > 0
 
+        # 실제 신뢰도 계산 (기존 히스토리를 prediction_history로 전달)
+        confidence = compute_composite_confidence(details, regime, history)
+
         history.append({
             "date": dates_all[i],
             "predicted_direction": "up" if pred_ret[0] > 0 else "down",
             "predicted_return": round(float(pred_ret[0]), 4),
-            "confidence": 50.0,
+            "confidence": round(confidence, 1),
             "signal_valid": True,
             "individual_dirs": [bool(d) for d in dirs],
             "actual_direction": "up" if actual_up else "down",
