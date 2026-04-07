@@ -55,13 +55,13 @@ def send_prediction_alert(result: dict):
     portfolio = result.get("portfolio", "")
     meta_proba = result.get("meta_proba")
 
-    # 방향
-    if not signal_valid:
-        direction_str = "― 신호없음"
-    elif pred_ret > 0:
+    # 방향 및 매매 전략 (일일 양방향 매매)
+    if pred_ret > 0:
         direction_str = "▲ 상승"
+        trade_action = "오늘 롱 매수"
     else:
         direction_str = "▼ 하락"
+        trade_action = "오늘 인버스 매수"
 
     sign = "+" if pred_ret > 0 else ""
 
@@ -97,6 +97,7 @@ def send_prediction_alert(result: dict):
 
     text += (
         f"\n방향: *{direction_str}*\n"
+        f"매매: *{trade_action}* (장중 청산)\n"
         f"예측 등락률: *{sign}{pred_ret:.2f}%* (±{mc_std:.2f}%) {mc_emoji} {mc_label}\n"
         f"신뢰도: {confidence:.1f}% (임계 {threshold:.0f}%)\n"
         f"모델 합의: {up_vote} ({agreement:.0f}%)\n"

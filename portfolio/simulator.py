@@ -1,6 +1,7 @@
-"""가상 포트폴리오 시뮬레이터 v2
+"""가상 포트폴리오 시뮬레이터 v3
 
-손절/익절/최대보유/포지션사이징 전략 포함.
+일일 양방향 매매 전략: 롱/인버스, 오버나이트 없음.
+매일 open 매수 → 목표가 또는 장마감 청산.
 """
 import json
 import logging
@@ -16,10 +17,9 @@ logger = logging.getLogger(__name__)
 PORTFOLIO_PATH = Path(__file__).parent / "portfolio.json"
 INITIAL_CAPITAL = 100_000_000
 
-# 손절/익절/최대보유
-STOP_LOSS = -2.0      # -2% 손절
-TAKE_PROFIT = 3.0     # +3% 익절
-MAX_HOLD_DAYS = 5     # 최대 보유 기간
+# 일일 매매 설정
+COMMISSION_PER_TRADE = COMMISSION_RATE * 2  # 매수 + 매도 = 0.03%
+TARGET_PROFIT = 0.5  # 목표 수익률 0.5% (수수료 제외 전)
 
 # 불확실성 기반 포지션 사이징
 SIZING_MAP = {
@@ -40,12 +40,12 @@ def _new_portfolio():
     return {
         "capital": INITIAL_CAPITAL,
         "initial_capital": INITIAL_CAPITAL,
-        "position": "cash",
+        "position": "cash",  # cash/long/inverse
+        "direction": None,   # "up" or "down"
         "entry_price": None,
         "entry_date": None,
         "invested_amount": 0,
         "sizing_ratio": 1.0,
-        "hold_days": 0,
         "trades": [],
         "wins": 0,
         "losses": 0,
@@ -60,122 +60,150 @@ def _save_portfolio(pf):
 
 
 def execute_trade(date, signal_valid, predicted_direction, mc_level="medium",
-                  current_price=None):
-    """매일 신호 + 손절/익절 로직
+                  ohlc=None):
+    """일일 양방향 매매 실행
+
+    매일 open 매수 → 목표가 도달 시 청산, 미도달 시 장마감(close) 청산.
+    오버나이트 없음: 매일 position이 cash로 리셋.
 
     Args:
+        date: 거래일 (YYYY-MM-DD)
+        signal_valid: 신호 유효 여부 (현재는 항상 매매하므로 참고용)
+        predicted_direction: "up" 또는 "down"
         mc_level: MC Dropout 불확실성 ("low"/"medium"/"high")
-        current_price: 현재 코스피 종가
+        ohlc: dict with "open", "high", "low", "close" (None이면 DB 조회)
     """
     pf = _load_portfolio()
 
     if pf["trades"] and pf["trades"][-1].get("date") == date:
         return pf
 
-    # 현재가 조회
-    if current_price is None:
-        current_price = _get_latest_kospi_close()
+    # OHLC 조회
+    if ohlc is None:
+        ohlc = _get_ohlc_for_date(date)
+    if ohlc is None:
+        logger.warning(f"  [Portfolio] {date} OHLC 데이터 없음")
+        return pf
 
-    action = "hold"
-    exit_reason = None
+    open_price = ohlc["open"]
+    high_price = ohlc["high"]
+    low_price = ohlc["low"]
+    close_price = ohlc["close"]
 
-    # === 포지션 보유 중 ===
-    if pf["position"] == "long" and pf["entry_price"]:
-        pf["hold_days"] += 1
-        unrealized = (current_price / pf["entry_price"] - 1) * 100
+    # 포지션 사이징
+    sizing = SIZING_MAP.get(mc_level, 0.6)
+    invested = pf["capital"] * sizing
+    buy_commission = invested * COMMISSION_RATE
 
-        # 손절
-        if unrealized <= STOP_LOSS:
-            action = "sell"
-            exit_reason = f"손절 ({unrealized:+.1f}%)"
-        # 익절
-        elif unrealized >= TAKE_PROFIT:
-            action = "sell"
-            exit_reason = f"익절 ({unrealized:+.1f}%)"
-        # 최대 보유 기간 초과
-        elif pf["hold_days"] >= MAX_HOLD_DAYS:
-            action = "sell"
-            exit_reason = f"보유기한 ({pf['hold_days']}일)"
-        # 하락 신호
-        elif signal_valid and predicted_direction == "down":
-            action = "sell"
-            exit_reason = "하락 신호"
+    # 매수가 = 당일 open
+    entry_price = open_price
+    direction = predicted_direction  # "up" -> 롱, "down" -> 인버스
 
-    # === 현금 보유 중 ===
-    elif pf["position"] == "cash":
-        if signal_valid and predicted_direction == "up":
-            action = "buy"
+    # 목표 수익률 (수수료 포함)
+    target_pct = (TARGET_PROFIT + COMMISSION_PER_TRADE * 100) / 100
 
-    # 매매 실행
-    if action == "buy":
-        sizing = SIZING_MAP.get(mc_level, 0.6)
-        invested = pf["capital"] * sizing
-        commission = invested * COMMISSION_RATE
-        pf["invested_amount"] = round(invested - commission)
-        pf["capital"] -= round(invested)
-        pf["entry_price"] = current_price
-        pf["entry_date"] = date
-        pf["hold_days"] = 0
-        pf["sizing_ratio"] = sizing
-        pf["position"] = "long"
+    # 장중 목표가 도달 여부 확인
+    if direction == "up":
+        # 롱: 코스피 상승 시 수익
+        target_price = entry_price * (1 + target_pct)
+        target_reached = high_price >= target_price
+        if target_reached:
+            exit_price = target_price
+            exit_reason = f"목표가 도달 ({target_pct*100:.2f}%)"
+        else:
+            exit_price = close_price
+            exit_reason = "장마감"
+        # 실제 수익률 (롱)
+        raw_return = (exit_price / entry_price - 1)
+    else:
+        # 인버스: 코스피 하락 시 수익 (수익률 = -(close/open - 1))
+        target_price = entry_price * (1 - target_pct)
+        target_reached = low_price <= target_price
+        if target_reached:
+            exit_price = target_price
+            exit_reason = f"목표가 도달 ({target_pct*100:.2f}%)"
+        else:
+            exit_price = close_price
+            exit_reason = "장마감"
+        # 실제 수익률 (인버스): 코스피 하락 = 수익
+        raw_return = -(exit_price / entry_price - 1)
 
-    elif action == "sell" and pf["position"] == "long":
-        if pf["entry_price"] and current_price:
-            pnl_pct = (current_price / pf["entry_price"] - 1)
-            pnl = pf["invested_amount"] * pnl_pct
-            commission = abs(pf["invested_amount"] + pnl) * COMMISSION_RATE
-            pf["capital"] += round(pf["invested_amount"] + pnl - commission)
+    # 수수료 차감
+    net_return = raw_return - COMMISSION_PER_TRADE
+    pnl = invested * net_return
 
-            if pnl > 0:
-                pf["wins"] += 1
-            else:
-                pf["losses"] += 1
+    # 자본 업데이트
+    pf["capital"] += round(pnl)
 
-        pf["position"] = "cash"
-        pf["entry_price"] = None
-        pf["entry_date"] = None
-        pf["invested_amount"] = 0
-        pf["hold_days"] = 0
+    if pnl > 0:
+        pf["wins"] += 1
+    else:
+        pf["losses"] += 1
 
     # MDD 추적
-    total_value = pf["capital"] + (pf["invested_amount"] if pf["position"] == "long" else 0)
+    total_value = pf["capital"]
     if total_value > pf.get("peak_capital", INITIAL_CAPITAL):
         pf["peak_capital"] = total_value
     dd = (total_value / pf["peak_capital"] - 1) * 100
     if dd < pf.get("max_drawdown", 0):
         pf["max_drawdown"] = round(dd, 2)
 
+    # 포지션은 항상 cash로 리셋 (오버나이트 없음)
+    pf["position"] = "cash"
+    pf["direction"] = None
+    pf["entry_price"] = None
+    pf["entry_date"] = None
+    pf["invested_amount"] = 0
+    pf["sizing_ratio"] = sizing
+
     trade = {
         "date": date,
-        "action": action,
-        "price": current_price,
+        "direction": direction,
+        "action": "롱" if direction == "up" else "인버스",
+        "entry_price": entry_price,
+        "exit_price": exit_price,
         "exit_reason": exit_reason,
+        "pnl": round(pnl),
+        "return_pct": round(net_return * 100, 2),
     }
     pf["trades"].append(trade)
     pf["trades"] = pf["trades"][-90:]
     _save_portfolio(pf)
 
-    if action != "hold":
-        logger.info(f"  [Portfolio] {action.upper()} @ {current_price:.1f}"
-                     + (f" ({exit_reason})" if exit_reason else "")
-                     + f" sizing={pf.get('sizing_ratio', 1):.0%}")
+    dir_label = "롱" if direction == "up" else "인버스"
+    logger.info(f"  [Portfolio] {dir_label} 매매 @ {entry_price:.1f}→{exit_price:.1f} "
+                f"({exit_reason}) P/L: {pnl:+,.0f}원 ({net_return*100:+.2f}%)")
 
     return pf
 
 
+def _get_ohlc_for_date(date):
+    """특정 날짜의 OHLC 데이터 조회"""
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        r = conn.execute(
+            "SELECT open, high, low, close FROM kospi_index WHERE date = ?",
+            (date,)
+        ).fetchone()
+        conn.close()
+        if r:
+            return {"open": r[0], "high": r[1], "low": r[2], "close": r[3]}
+    except Exception as e:
+        logger.error(f"OHLC 조회 실패: {e}")
+    return None
+
+
 def settle_trade(actual_return):
-    """정답 확인 시 미반영 수익 갱신 (hold 중인 경우)"""
+    """정답 확인 시 호출 (오버나이트 없으므로 MDD만 업데이트)"""
     pf = _load_portfolio()
-    # 현재 포지션이 long이면 MDD 업데이트만 수행
-    if pf["position"] == "long" and pf["invested_amount"] > 0:
-        pnl = pf["invested_amount"] * (actual_return / 100)
-        total = pf["capital"] + pf["invested_amount"] + pnl
-        if total > pf.get("peak_capital", INITIAL_CAPITAL):
-            pf["peak_capital"] = round(total)
-        dd = (total / pf["peak_capital"] - 1) * 100
-        if dd < pf.get("max_drawdown", 0):
-            pf["max_drawdown"] = round(dd, 2)
-        _save_portfolio(pf)
+    # 일일 청산이므로 포지션이 없음 - MDD만 확인
+    total = pf["capital"]
+    if total > pf.get("peak_capital", INITIAL_CAPITAL):
+        pf["peak_capital"] = round(total)
+    dd = (total / pf["peak_capital"] - 1) * 100
+    if dd < pf.get("max_drawdown", 0):
+        pf["max_drawdown"] = round(dd, 2)
+    _save_portfolio(pf)
     return pf
 
 
@@ -192,38 +220,21 @@ def _get_latest_kospi_close():
 def get_portfolio_summary():
     pf = _load_portfolio()
 
-    # 미실현 손익 계산
-    unrealized_pnl = 0
-    if pf["position"] == "long" and pf["entry_price"] and pf["invested_amount"] > 0:
-        current_price = _get_latest_kospi_close()
-        unrealized_pnl = pf["invested_amount"] * (current_price / pf["entry_price"] - 1)
-        market_value = pf["invested_amount"] + unrealized_pnl
-    else:
-        current_price = None
-        market_value = 0
-
-    total_value = pf["capital"] + market_value
-    initial = pf["initial_capital"]
+    # 오버나이트 없으므로 미실현 손익은 항상 0
+    total_value = pf["capital"]
+    initial = pf.get("initial_capital", INITIAL_CAPITAL)
     total_return = (total_value / initial - 1) * 100
     wins = pf["wins"]
     losses = pf["losses"]
     total_trades = wins + losses
     win_rate = wins / total_trades * 100 if total_trades > 0 else 0
 
-    # 샤프 비율 (거래 기반)
-    trade_rets = []
-    for t in pf["trades"]:
-        if t["action"] == "sell" and t.get("price") and t.get("exit_reason"):
-            trade_rets.append(1.0)  # 대략적 추정
+    # 최근 거래 통계
+    recent_trades = pf.get("trades", [])[-30:]
+    recent_pnl = sum(t.get("pnl", 0) for t in recent_trades)
 
-    position = "현금 보유"
-    entry_info = ""
-    if pf["position"] == "long" and pf["entry_price"]:
-        position = "매수 중"
-        sl = pf["entry_price"] * (1 + STOP_LOSS / 100)
-        tp = pf["entry_price"] * (1 + TAKE_PROFIT / 100)
-        entry_info = f" (진입 {pf['entry_price']:.1f} / 손절 {sl:.1f} / 익절 {tp:.1f})"
-        position += entry_info
+    # 포지션 상태 (일일 청산이므로 항상 현금)
+    position = "현금 보유 (일일 청산)"
 
     return {
         "capital": total_value,
@@ -234,33 +245,55 @@ def get_portfolio_summary():
         "win_rate": round(win_rate, 1),
         "mdd": pf.get("max_drawdown", 0),
         "sizing": pf.get("sizing_ratio", 1.0),
-        "unrealized_pnl": round(unrealized_pnl),
+        "unrealized_pnl": 0,  # 오버나이트 없음
+        "recent_pnl": recent_pnl,
     }
 
 
-def format_portfolio_summary():
+def format_portfolio_summary(next_direction=None):
+    """포트폴리오 요약 포맷
+
+    Args:
+        next_direction: 다음 거래 방향 ("up" -> 롱, "down" -> 인버스)
+    """
     s = get_portfolio_summary()
     sign = "+" if s["total_return"] >= 0 else ""
     sizing_pct = int(s.get("sizing", 1.0) * 100)
-    unrealized_pnl = s.get("unrealized_pnl", 0)
-    pnl_sign = "+" if unrealized_pnl >= 0 else ""
-    pnl_line = f"  미실현 손익: {pnl_sign}{unrealized_pnl:,}원\n" if unrealized_pnl != 0 else ""
+
+    # 다음 거래 방향 표시
+    if next_direction == "up":
+        next_trade = "오늘 롱 매수"
+    elif next_direction == "down":
+        next_trade = "오늘 인버스 매수"
+    else:
+        next_trade = "대기"
+
+    # 최근 30일 손익
+    recent_pnl = s.get("recent_pnl", 0)
+    recent_sign = "+" if recent_pnl >= 0 else ""
+
     return (
-        f"💰 *가상 포트폴리오*\n"
+        f"💰 *가상 포트폴리오* (일일 양방향 매매)\n"
         f"  잔고: {s['capital']:,}원 ({sign}{s['total_return']}%)\n"
-        f"  포지션: {s['position']}\n"
-        f"{pnl_line}"
+        f"  다음 거래: {next_trade}\n"
+        f"  최근 30일 손익: {recent_sign}{recent_pnl:,}원\n"
         f"  투입비율: {sizing_pct}% | MDD: {s['mdd']:.1f}%\n"
         f"  승률: {s['wins']}승 {s['losses']}패 ({s['win_rate']}%)"
     )
 
 
-def backtest_strategy(db_path=None):
-    """손절/익절 전략 백테스팅 (2022~2024)"""
+def backtest_strategy(db_path=None, direction_accuracy=0.52):
+    """일일 양방향 매매 전략 백테스팅 (2022~2024)
+
+    Args:
+        db_path: DB 경로
+        direction_accuracy: 방향 예측 정확도 (기본 52%)
+    """
     db_path = db_path or DB_PATH
     conn = sqlite3.connect(db_path)
     rows = conn.execute(
-        "SELECT date, close FROM kospi_index WHERE date >= '2022-01-01' AND date <= '2024-12-31' ORDER BY date"
+        "SELECT date, open, high, low, close FROM kospi_index "
+        "WHERE date >= '2022-01-01' AND date <= '2024-12-31' ORDER BY date"
     ).fetchall()
     conn.close()
 
@@ -269,68 +302,85 @@ def backtest_strategy(db_path=None):
         return
 
     dates = [r[0] for r in rows]
-    closes = np.array([r[1] for r in rows])
-    rets = np.diff(closes) / closes[:-1] * 100
+    opens = np.array([r[1] for r in rows])
+    highs = np.array([r[2] for r in rows])
+    lows = np.array([r[3] for r in rows])
+    closes = np.array([r[4] for r in rows])
+
+    # 실제 방향 (open -> close)
+    actual_directions = closes > opens  # True = 상승, False = 하락
 
     # === 전략 1: 단순 매수 후 보유 (Buy & Hold) ===
     bh_ret = (closes[-1] / closes[0] - 1) * 100
 
-    # === 전략 2: 매일 매수 (단순) ===
-    simple_rets = rets / 100  # 상승일만 매수 가정 → 전체 수익
-    simple_cum = (np.prod(1 + simple_rets * 0.5) - 1) * 100  # 50% 노출
-
-    # === 전략 3: 손절/익절 시뮬레이션 ===
+    # === 전략 2: 일일 양방향 매매 시뮬레이션 ===
+    np.random.seed(42)  # 재현성
     capital = INITIAL_CAPITAL
-    position = "cash"
-    entry_price = None
-    hold_days = 0
     wins = 0
     losses = 0
     peak = capital
-
     daily_values = [capital]
 
-    for i in range(len(closes)):
-        if position == "long":
-            hold_days += 1
-            unrealized = (closes[i] / entry_price - 1) * 100
+    target_pct = (TARGET_PROFIT + COMMISSION_PER_TRADE * 100) / 100
 
-            if unrealized <= STOP_LOSS or unrealized >= TAKE_PROFIT or hold_days >= MAX_HOLD_DAYS:
-                # 청산
-                pnl = capital * 0.8 * (closes[i] / entry_price - 1)  # 80% 투입
-                capital += pnl - abs(capital * 0.8) * COMMISSION_RATE * 2
-                if pnl > 0:
-                    wins += 1
-                else:
-                    losses += 1
-                position = "cash"
-                entry_price = None
-                hold_days = 0
+    for i in range(len(dates)):
+        # 방향 예측 (direction_accuracy 확률로 맞춤)
+        is_correct = np.random.random() < direction_accuracy
+        actual_up = actual_directions[i]
+        pred_up = actual_up if is_correct else not actual_up
 
-        elif position == "cash" and i < len(rets):
-            # 간단한 모멘텀 신호: 전일 양봉이면 매수
-            if i > 0 and rets[i - 1] > 0:
-                position = "long"
-                entry_price = closes[i]
-                hold_days = 0
+        open_p = opens[i]
+        high_p = highs[i]
+        low_p = lows[i]
+        close_p = closes[i]
 
-        total = capital + (capital * 0.8 * (closes[i] / entry_price - 1) if position == "long" and entry_price else 0)
-        daily_values.append(total)
-        if total > peak:
-            peak = total
+        invested = capital * 0.6  # 60% 투입
+
+        if pred_up:
+            # 롱: 상승 예측
+            target_price = open_p * (1 + target_pct)
+            target_reached = high_p >= target_price
+            exit_price = target_price if target_reached else close_p
+            raw_return = (exit_price / open_p - 1)
+        else:
+            # 인버스: 하락 예측
+            target_price = open_p * (1 - target_pct)
+            target_reached = low_p <= target_price
+            exit_price = target_price if target_reached else close_p
+            raw_return = -(exit_price / open_p - 1)
+
+        net_return = raw_return - COMMISSION_PER_TRADE
+        pnl = invested * net_return
+        capital += pnl
+
+        if pnl > 0:
+            wins += 1
+        else:
+            losses += 1
+
+        daily_values.append(capital)
+        if capital > peak:
+            peak = capital
 
     final_return = (capital / INITIAL_CAPITAL - 1) * 100
     daily_vals = np.array(daily_values[1:])
     daily_rets_strat = np.diff(daily_vals) / daily_vals[:-1]
     sharpe = float(daily_rets_strat.mean() / daily_rets_strat.std() * np.sqrt(252)) if daily_rets_strat.std() > 0 else 0
-    mdd = float((np.minimum.accumulate(daily_vals[::-1])[::-1] / np.maximum.accumulate(daily_vals) - 1).min() * 100)
+
+    # MDD 계산
+    peak_values = np.maximum.accumulate(daily_vals)
+    drawdowns = (daily_vals / peak_values - 1) * 100
+    mdd = float(drawdowns.min())
+
+    total_trades = wins + losses
+    win_rate = wins / total_trades * 100 if total_trades > 0 else 0
 
     logger.info("=" * 50)
-    logger.info("백테스팅 결과 (2022~2024)")
+    logger.info(f"백테스팅 결과 (2022~2024) - DA {direction_accuracy*100:.0f}%")
     logger.info("=" * 50)
     logger.info(f"Buy & Hold: {bh_ret:+.2f}%")
-    logger.info(f"손절/익절 전략: {final_return:+.2f}% | 샤프={sharpe:.2f} | MDD={mdd:.1f}%")
-    logger.info(f"  {wins}승 {losses}패 ({wins/(wins+losses)*100:.0f}%)" if wins + losses > 0 else "")
+    logger.info(f"양방향 매매: {final_return:+.2f}% | 샤프={sharpe:.2f} | MDD={mdd:.1f}%")
+    logger.info(f"  {wins}승 {losses}패 ({win_rate:.0f}%) | 거래 {total_trades}건")
 
     return {
         "buy_hold": round(bh_ret, 2),
@@ -339,4 +389,5 @@ def backtest_strategy(db_path=None):
         "mdd": round(mdd, 1),
         "wins": wins,
         "losses": losses,
+        "total_trades": total_trades,
     }

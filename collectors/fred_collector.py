@@ -63,6 +63,10 @@ class FREDCollector:
                 logger.error(f"[FRED] {name}({series_id}) 수집 실패: {e}")
                 continue
 
+            # RangeIndex인 경우 DatetimeIndex로 변환
+            if not isinstance(series.index, pd.DatetimeIndex):
+                series.index = pd.to_datetime(series.index)
+
             df = pd.DataFrame({
                 "date": series.index.strftime("%Y-%m-%d"),
                 "value": series.values,
