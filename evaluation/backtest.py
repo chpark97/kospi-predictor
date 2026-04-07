@@ -9,7 +9,7 @@ logger = logging.getLogger(__name__)
 
 
 def evaluate_predictions(y_true, y_pred, confidences, dates):
-    """예측 결과 평가
+    """예측 결과 평가 (일일 양방향 매매 전략)
 
     Args:
         y_true: 실제 등락률 (%)
@@ -27,14 +27,19 @@ def evaluate_predictions(y_true, y_pred, confidences, dates):
     pred_direction = y_pred > 0
     direction_accuracy = np.mean(true_direction == pred_direction) * 100
 
-    # 2. 백테스팅 누적 수익률 (수수료 반영)
-    # 전략: 상승 예측 시 매수, 하락 예측 시 관망
+    # 2. 백테스팅 누적 수익률 (양방향 매매, 수수료 반영)
+    # 전략: 상승 예측 → 롱 (actual_return - 수수료)
+    #       하락 예측 → 인버스 (-actual_return - 수수료)
+    # 매일 거래하므로 관망 없음
     daily_returns = []
+    commission = COMMISSION_RATE * 2  # 매수+매도 수수료
+
     for i in range(n):
-        if y_pred[i] > 0:  # 상승 예측 -> 매수
-            ret = y_true[i] / 100 - COMMISSION_RATE * 2  # 매수+매도 수수료
-        else:  # 하락 예측 -> 관망 (수익 0)
-            ret = 0.0
+        actual_ret = y_true[i] / 100  # % -> 비율
+        if y_pred[i] > 0:  # 상승 예측 -> 롱
+            ret = actual_ret - commission
+        else:  # 하락 예측 -> 인버스
+            ret = -actual_ret - commission
         daily_returns.append(ret)
 
     daily_returns = np.array(daily_returns)
@@ -48,8 +53,8 @@ def evaluate_predictions(y_true, y_pred, confidences, dates):
 
     # 4. 추가 지표
     avg_confidence = np.mean(confidences) * 100
-    win_rate = np.mean(daily_returns[daily_returns != 0] > 0) * 100 if np.any(daily_returns != 0) else 0
-    trade_count = np.sum(y_pred > 0)
+    win_rate = np.mean(daily_returns > 0) * 100  # 매일 거래하므로 전체 대상
+    trade_count = n  # 매일 거래
 
     logger.info(f"  방향 정확도: {direction_accuracy:.1f}%")
     logger.info(f"  누적 수익률: {cumulative_return:.2f}% (거래 {trade_count}건)")

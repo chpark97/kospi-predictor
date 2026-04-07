@@ -425,11 +425,11 @@ def run_prediction():
     vix_status = "정상" if (vix_value and vix_value < VIX_THRESHOLD) else "경고"
     sent_str = f"{sentiment:+.2f}" if sentiment is not None else "N/A"
 
-    # 8. 포트폴리오 (손절/익절 + 포지션 사이징)
+    # 8. 포트폴리오 (일일 양방향 매매)
     from portfolio.simulator import execute_trade, format_portfolio_summary
-    execute_trade(today, signal_valid, "up" if pred_return > 0 else "down",
-                  mc_level=mc_level)
-    portfolio_str = format_portfolio_summary()
+    pred_direction = "up" if pred_return > 0 else "down"
+    execute_trade(today, signal_valid, pred_direction, mc_level=mc_level)
+    portfolio_str = format_portfolio_summary(next_direction=pred_direction)
 
     # 9. 결과 출력
     output_lines = [
@@ -477,7 +477,7 @@ def run_prediction():
         "mc_std": round(mc_std, 3),
         "mc_label": mc_label,
         "mc_emoji": mc_emoji,
-        "portfolio": format_portfolio_summary(),
+        "portfolio": format_portfolio_summary(next_direction=pred_direction),
         "meta_proba": round(float(meta_proba), 3) if meta_proba is not None else None,
         "event": event_str,
         "geo_level": geo_level,
