@@ -13,6 +13,7 @@ from fastapi import FastAPI
 from fastapi.responses import HTMLResponse
 
 from config.settings import DB_PATH
+from portfolio.simulator import get_portfolio_summary
 
 app = FastAPI(title="코스피 예측 대시보드")
 
@@ -80,21 +81,19 @@ def get_performance():
 @app.get("/portfolio")
 def get_portfolio():
     """가상 포트폴리오 현황"""
-    pf = _load_json(PORTFOLIO_PATH)
-    if not pf:
+    try:
+        summary = get_portfolio_summary()
+        return {
+            "capital": summary["capital"],
+            "total_return": summary["total_return"],
+            "position": summary["position"],
+            "wins": summary["wins"],
+            "losses": summary["losses"],
+            "win_rate": summary["win_rate"],
+            "unrealized_pnl": summary["unrealized_pnl"],
+        }
+    except Exception:
         return {"error": "포트폴리오 없음"}
-
-    total_ret = (pf["capital"] / pf["initial_capital"] - 1) * 100
-    total_trades = pf["wins"] + pf["losses"]
-    return {
-        "capital": pf["capital"],
-        "initial_capital": pf["initial_capital"],
-        "total_return": round(total_ret, 2),
-        "position": pf["position"],
-        "wins": pf["wins"],
-        "losses": pf["losses"],
-        "win_rate": round(pf["wins"] / total_trades * 100, 1) if total_trades > 0 else 0,
-    }
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -149,9 +148,12 @@ async function load() {
   // 포트폴리오
   const pf = await (await fetch('/portfolio')).json();
   const ret = pf.total_return || 0;
+  const unrealizedPnl = pf.unrealized_pnl || 0;
+  const pnlHtml = unrealizedPnl !== 0 ? `<div class="stat"><div class="value ${unrealizedPnl>=0?'up':'down'}">${unrealizedPnl>=0?'+':''}${unrealizedPnl.toLocaleString()}원</div><div class="label">미실현 손익</div></div>` : '';
   document.getElementById('pf').innerHTML = `
     <div class="stat"><div class="value">${(pf.capital||0).toLocaleString()}원</div><div class="label">잔고</div></div>
     <div class="stat"><div class="value ${ret>=0?'up':'down'}">${ret>=0?'+':''}${ret.toFixed(2)}%</div><div class="label">수익률</div></div>
+    ${pnlHtml}
     <div class="stat"><div class="value">${pf.wins||0}승 ${pf.losses||0}패</div><div class="label">전적</div></div>`;
 
   // 히스토리 + 차트
